@@ -43,8 +43,8 @@ class TrainingConfig(BaseModel):
 
 class PathsConfig(BaseModel):
     """Output paths."""
-    dataset_dir: str = Field("datasets")
-    save_dir: str = Field("runs/train")
+    save_dataset_dir: str = Field("datasets")
+    save_model_dir: str = Field("runs/train")
 
 
 class TrainRequest(BaseModel):
@@ -69,8 +69,8 @@ class TrainRequest(BaseModel):
                 "batch_size": 4,
             },
             "paths": {
-                "dataset_dir": "datasets",
-                "save_dir": "runs/train",
+                "save_dataset_dir": "datasets",
+                "save_model_dir": "runs/train",
             },
         }],
     }}
@@ -114,3 +114,4 @@ class QueueInfo(BaseModel):
     finished: int
     failed: int
     jobs: list[JobDetail]
+    

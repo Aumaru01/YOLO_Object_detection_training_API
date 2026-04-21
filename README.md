@@ -5,7 +5,7 @@ REST API for fine-tuning YOLOv8 models on logo detection datasets from Roboflow 
 ## Architecture
 
 ```
-Client ──POST /train──▶ FastAPI ──enqueue──▶ Redis Queue ──▶ RQ Worker ──▶ YOLOv8Backend
+Client ──POST /train──▶ FastAPI ──enqueue──▶ Redis Queue ──▶ RQ Worker ──▶ YOLOTrainBackend
                            │                                                    │
                      GET /jobs/:id                                    download → train → evaluate
                      GET /queue
@@ -20,9 +20,8 @@ The system separates the API layer from training execution. When a training requ
 ├── finetune_main_api.py        # FastAPI application — routes and queue setup
 ├── schemas.py                  # Pydantic models — request/response validation
 ├── queue_worker.py             # RQ task — bridges API to backend
-├── finetune_yolov8_backend.py  # Core training backend — YOLO + Roboflow logic
-├── config.yaml                 # Default values reference (optional)
-└── requirements.txt            # Python dependencies
+├── finetune_yolo_backend.py     # Core training backend — YOLO + Roboflow logic
+└── requirements.txt             # Python dependencies
 ```
 
 ## Requirements
@@ -54,10 +53,10 @@ sudo systemctl status redis
 rq worker training --with-scheduler
 
 # 3. API Server
-uvicorn finetune_main_api:app --host 0.0.0.0 --port 8000 --reload
+uvicorn finetune_main_api:app --host 0.0.0.0 --port 1234 --reload
 ```
 
-Interactive API docs are available at `http://localhost:8000/docs` once the server is running.
+Interactive API docs are available at `http://localhost:1234/docs` once the server is running.
 
 ## API Endpoints
 
@@ -66,7 +65,7 @@ Interactive API docs are available at `http://localhost:8000/docs` once the serv
 Accepts a JSON body and enqueues the job. Returns immediately with a `job_id`.
 
 ```bash
-curl -X POST http://localhost:8000/train \
+curl -X POST http://localhost:1234/train \
   -H "Content-Type: application/json" \
   -d '{
     "roboflow": {
@@ -92,8 +91,8 @@ curl -X POST http://localhost:8000/train \
       "cache": true
     },
     "paths": {
-      "dataset_dir": "datasets",
-      "save_dir": "runs/train"
+      "save_dataset_dir": "datasets",
+      "save_model_dir": "runs/train"
     }
   }'
 ```
@@ -101,7 +100,7 @@ curl -X POST http://localhost:8000/train \
 Only `roboflow.api_key` is required. Everything else has defaults, so the minimal request is:
 
 ```bash
-curl -X POST http://localhost:8000/train \
+curl -X POST http://localhost:1234/train \
   -H "Content-Type: application/json" \
   -d '{"roboflow": {"api_key": "YOUR_KEY"}}'
 ```
@@ -120,7 +119,7 @@ Response (`202 Accepted`):
 ### `GET /jobs/{job_id}` — Check job status
 
 ```bash
-curl http://localhost:8000/jobs/a1b2c3d4-...
+curl http://localhost:1234/jobs/a1b2c3d4-...
 ```
 
 Response:
@@ -134,7 +133,7 @@ Response:
   "started_at": "2026-04-21T10:00:05",
   "ended_at": "2026-04-21T12:30:00",
   "result": {
-    "save_dir": "runs/train-20260421-100005",
+    "save_model_dir": "runs/train-20260421-100005",
     "epochs": 100,
     "device": "cuda",
     "mAP50": 0.8923,
@@ -151,7 +150,7 @@ Status values: `queued`, `started`, `finished`, `failed`, `canceled`.
 Removes a queued job or sends a stop signal to a running job.
 
 ```bash
-curl -X DELETE http://localhost:8000/jobs/a1b2c3d4-...
+curl -X DELETE http://localhost:1234/jobs/a1b2c3d4-...
 ```
 
 ### `GET /queue` — View queue status
@@ -159,7 +158,7 @@ curl -X DELETE http://localhost:8000/jobs/a1b2c3d4-...
 Returns counts and details for all jobs across all states.
 
 ```bash
-curl http://localhost:8000/queue
+curl http://localhost:1234/queue
 ```
 
 ### `GET /health` — Health check
@@ -167,7 +166,7 @@ curl http://localhost:8000/queue
 Verifies Redis connectivity and reports queue size.
 
 ```bash
-curl http://localhost:8000/health
+curl http://localhost:1234/health
 ```
 
 ## Request Body Reference
@@ -194,15 +193,15 @@ All fields under `training` and `paths` have defaults. Only `roboflow.api_key` i
 | | `copy_paste` | float | `0.1` | Copy-paste augmentation |
 | | `plots` | bool | `true` | Save training plots |
 | | `cache` | bool | `true` | Cache images in RAM |
-| **paths** | `dataset_dir` | string | `datasets` | Dataset download directory |
-| | `save_dir` | string | `runs/train` | Training output directory |
+| **paths** | `save_dataset_dir` | string | `datasets` | Dataset download directory |
+| | `save_model_dir` | string | `runs/train` | Training output directory |
 
 ## Training Pipeline
 
 Each job executes three steps in sequence:
 
 1. **Download** — Fetches the dataset from Roboflow (skips if already present).
-2. **Train** — Fine-tunes the YOLOv8 model with the specified hyperparameters. Weights and plots are saved to a timestamped directory under `save_dir`.
+2. **Train** — Fine-tunes the YOLOv8 model with the specified hyperparameters. Weights and plots are saved to a timestamped directory under `save_model_dir`.
 3. **Evaluate** — Runs validation and returns mAP50 and mAP50-95 metrics.
 
 Results are stored in Redis for 7 days.
@@ -212,4 +211,4 @@ Results are stored in Redis for 7 days.
 - The queue processes one job at a time to avoid GPU contention. Jobs are executed in FIFO order.
 - The API server and the worker can run on different machines as long as they share the same Redis instance and filesystem.
 - If the worker is restarted while a job is running, that job will be marked as failed. Re-submit it via `POST /train`.
-- GPU is auto-detected. If CUDA is available, training runs on GPU; otherwise it falls back to CPU.
+- GPU is auto-detected. If CUDA is available, training runs on 

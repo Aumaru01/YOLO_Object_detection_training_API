@@ -1,22 +1,21 @@
 """
-YOLOv8 Fine-tuning Backend
+YOLO Fine-tuning Backend
 ==========================
 Pure backend — receives all parameters directly (no config file).
 Called by the queue worker with values from the API request body.
 """
 
-from __future__ import annotations
-
-import logging
 import os
-import shutil
 import time
+import torch
+import shutil
+import logging
+
 from pathlib import Path
+from ultralytics import YOLO
+from roboflow import Roboflow
 from typing import Any, Optional
 
-import torch
-from roboflow import Roboflow
-from ultralytics import YOLO
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -26,13 +25,13 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-logger = logging.getLogger("yolov8_backend")
+logger = logging.getLogger("backend_log")
 
 
 # ---------------------------------------------------------------------------
 # Backend class
 # ---------------------------------------------------------------------------
-class YOLOv8Backend:
+class YOLOTrainBackend:
     """Stateless-ish training backend.
 
     Every parameter comes from the caller (API → worker → here).
@@ -47,8 +46,8 @@ class YOLOv8Backend:
         version: int,
         dataset_format: str,
         model: str,
-        dataset_dir: str,
-        save_dir: str,
+        save_dataset_dir: str,
+        save_model_dir: str,
     ) -> None:
         # Roboflow
         self.rf = Roboflow(api_key=api_key)
@@ -62,12 +61,12 @@ class YOLOv8Backend:
         self._model: Optional[YOLO] = None
 
         # Paths
-        self.dataset_dir = Path(dataset_dir)
-        self.dataset_dir.mkdir(parents=True, exist_ok=True)
+        self.save_dataset_dir = Path(save_dataset_dir)
+        self.save_dataset_dir.mkdir(parents=True, exist_ok=True)
 
         timestamp = time.strftime("%Y%m%d-%H%M%S")
-        self.save_dir = f"{save_dir}-{timestamp}"
-        os.makedirs(self.save_dir, exist_ok=True)
+        self.save_model_dir = f"{save_model_dir}-{timestamp}"
+        os.makedirs(self.save_model_dir, exist_ok=True)
 
         # Device
         self.device = self._select_device()
@@ -86,7 +85,7 @@ class YOLOv8Backend:
 
     @property
     def data_yaml_path(self) -> Path:
-        return self.dataset_dir / "data.yaml"
+        return self.save_dataset_dir / "data.yaml"
 
     # ------------------------------------------------------------------
     # Device
@@ -105,8 +104,8 @@ class YOLOv8Backend:
     def download_dataset(self, *, force: bool = False) -> Path:
         """Download dataset from Roboflow."""
         if self.data_yaml_path.exists() and not force:
-            logger.info("Dataset already at '%s' — skipping.", self.dataset_dir)
-            return self.dataset_dir
+            logger.info("Dataset already at '%s' — skipping.", self.save_dataset_dir)
+            return self.save_dataset_dir
 
         logger.info(
             "Downloading: %s/%s v%d (%s) ...",
@@ -114,10 +113,10 @@ class YOLOv8Backend:
         )
         project = self.rf.workspace(self.workspace).project(self.project_name)
         project.version(self.version).download(
-            self.dataset_format, location=str(self.dataset_dir),
+            self.dataset_format, location=str(self.save_dataset_dir),
         )
-        logger.info("Dataset saved to '%s'.", self.dataset_dir)
-        return self.dataset_dir
+        logger.info("Dataset saved to '%s'.", self.save_dataset_dir)
+        return self.save_dataset_dir
 
     # ------------------------------------------------------------------
     # Training
@@ -132,7 +131,7 @@ class YOLOv8Backend:
 
         Returns
         -------
-        dict with save_dir and basic metrics.
+        dict with save_model_dir and basic metrics.
         """
         if not self.data_yaml_path.exists():
             logger.info("Dataset not found — downloading first.")
@@ -153,20 +152,20 @@ class YOLOv8Backend:
             "plots": train_params["plots"],
             "cache": train_params["cache"],
             "device": self.device,
-            "project": self.save_dir,
+            "project": self.save_model_dir,
             "save": True,
         }
 
         logger.info(
             "Training — epochs=%s, batch=%s, lr0=%s, save='%s'",
-            train_args["epochs"], train_args["batch"], train_args["lr0"], self.save_dir,
+            train_args["epochs"], train_args["batch"], train_args["lr0"], self.save_model_dir,
         )
 
         results = self.model.train(**train_args)
         logger.info("Training complete.")
 
         return {
-            "save_dir": self.save_dir,
+            "save_model_dir": self.save_model_dir,
             "epochs": train_args["epochs"],
             "device": self.device,
         }
@@ -219,15 +218,15 @@ class YOLOv8Backend:
     # Cleanup
     # ------------------------------------------------------------------
     def cleanup_dataset(self) -> None:
-        if self.dataset_dir.exists():
-            shutil.rmtree(self.dataset_dir)
-            logger.info("Cleaned up '%s'.", self.dataset_dir)
+        if self.save_dataset_dir.exists():
+            shutil.rmtree(self.save_dataset_dir)
+            logger.info("Cleaned up '%s'.", self.save_dataset_dir)
 
     # ------------------------------------------------------------------
     # Repr
     # ------------------------------------------------------------------
     def __repr__(self) -> str:
         return (
-            f"YOLOv8Backend(project={self.project_name!r}, "
+            f"YOLOTrainBackend(project={self.project_name!r}, "
             f"v{self.version}, model={self.model_name!r}, device={self.device!r})"
         )
