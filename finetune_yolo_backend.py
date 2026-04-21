@@ -230,3 +230,5 @@ class YOLOTrainBackend:
             f"YOLOTrainBackend(project={self.project_name!r}, "
             f"v{self.version}, model={self.model_name!r}, device={self.device!r})"
         )
+
+        

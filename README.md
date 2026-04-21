@@ -70,7 +70,7 @@ sudo systemctl status redis
 rq worker training --with-scheduler
 
 # 3. API Server
-uvicorn finetune_main_api:app --host 0.0.0.0 --port 1234 --reload
+python -m finetune_main_api
 ```
 
 Interactive API docs are available at `http://localhost:1234/docs` once the server is running.
@@ -209,23 +209,4 @@ All fields under `training` and `paths` have defaults. Only `roboflow.api_key` i
 | | `mixup` | float | `0.2` | MixUp augmentation |
 | | `copy_paste` | float | `0.1` | Copy-paste augmentation |
 | | `plots` | bool | `true` | Save training plots |
-| | `cache` | bool | `true` | Cache images in RAM |
-| **paths** | `save_dataset_dir` | string | `datasets` | Dataset download directory |
-| | `save_model_dir` | string | `runs/train` | Training output directory |
-
-## Training Pipeline
-
-Each job executes three steps in sequence:
-
-1. **Download** — Fetches the dataset from Roboflow (skips if already present).
-2. **Train** — Fine-tunes the YOLOv8 model with the specified hyperparameters. Weights and plots are saved to a timestamped directory under `save_model_dir`.
-3. **Evaluate** — Runs validation and returns mAP50 and mAP50-95 metrics.
-
-Results are stored in Redis for 7 days.
-
-## Notes
-
-- The queue processes one job at a time to avoid GPU contention. Jobs are executed in FIFO order.
-- The API server and the worker can run on different machines as long as they share the same Redis instance and filesystem.
-- If the worker is restarted while a job is running, that job will be marked as failed. Re-submit it via `POST /train`.
-- GPU is auto-detected. If CUDA is available, training runs on 
+| | `cache` | bool | `true`

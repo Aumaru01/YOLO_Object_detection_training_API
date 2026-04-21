@@ -3,11 +3,12 @@ YOLOv8 Training API
 ===================
 FastAPI application with Redis Queue for managing training jobs.
 
-Start API:    uvicorn finetune_main_api:app --host 0.0.0.0 --port 1234 --reload
+Start API:    python -m finetune_main_api
 Start Worker: rq worker training --with-scheduler
 """
 
 import logging
+import uvicorn
 
 from rq import Queue
 from rq.job import Job
@@ -212,3 +213,6 @@ def health_check():
         return {"status": "healthy", "redis": "connected", "queue_size": len(task_queue)}
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Redis unavailable: {e}")
+
+if __name__ == '__main__':
+    uvicorn.run(app, host="0.0.0.0", port=1234)
