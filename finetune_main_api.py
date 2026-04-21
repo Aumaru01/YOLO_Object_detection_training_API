@@ -90,16 +90,6 @@ def _job_to_detail(job: Job) -> JobDetail:
 @app.post("/train", response_model=JobResponse, status_code=202)
 def submit_training(request: TrainRequest):
     """Submit a new training job to the queue.
-
-    Request body มี structure เดียวกับ config.yaml เดิม:
-
-    ```json
-    {
-        "roboflow": { "api_key": "...", "workspace": "...", ... },
-        "training": { "epochs": 100, "lr0": 0.005, ... },
-        "paths":    { "save_dataset_dir": "datasets", "save_model_dir": "runs/train" }
-    }
-    ```
     """
     job = task_queue.enqueue(
         run_training_job,
