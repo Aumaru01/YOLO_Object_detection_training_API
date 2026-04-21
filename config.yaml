@@ -1,0 +1,24 @@
+roboflow:
+  workspace: "jakapong-workspace"
+  project_name: "logo-detection-project-iihu1"
+  version: 1
+  dataset_format: "yolov8"
+
+training:
+  model: "yolov8m.pt"
+  epochs: 100
+  img_size: 640
+  batch_size: 4
+  patience: 60
+  optimizer: "AdamW"
+  lr0: 0.005
+  scale: 0.4
+  mosaic: 1.0
+  mixup: 0.2
+  copy_paste: 0.1
+  plots: true
+  cache: true
+
+paths:
+  dataset_dir: "datasets"
+  save_dir: "runs/train"
