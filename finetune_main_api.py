@@ -122,7 +122,7 @@ def submit_training(request: TrainRequest):
     )
 
 
-@app.get("/jobs/{job_id}", response_model=JobDetail)
+@app.get("/get_jobs_status", response_model=JobDetail)
 def get_job_status(job_id: str):
     """Check the status of a specific job."""
     try:
@@ -133,7 +133,7 @@ def get_job_status(job_id: str):
     return _job_to_detail(job)
 
 
-@app.delete("/jobs/{job_id}", response_model=JobResponse)
+@app.delete("/delete_jobs", response_model=JobResponse)
 def cancel_job(job_id: str):
     """Cancel a queued or running job."""
     try:
