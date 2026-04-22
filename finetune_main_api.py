@@ -12,13 +12,15 @@ import time
 import zipfile
 import uvicorn
 
+from typing import Optional
+
 from io import BytesIO
 from pathlib import Path
 
 from rq import Queue
 from rq.job import Job
 from redis import Redis
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from rq.command import send_stop_job_command
 
@@ -112,21 +114,24 @@ def _zip_directory(directory: Path) -> BytesIO:
 # Routes — Training
 # ---------------------------------------------------------------------------
 @app.post("/train", response_model=JobResponse, status_code=202)
-def submit_training(request: TrainRequest):
+def submit_training(
+    request: TrainRequest,
+    job_name: Optional[str] = Query(
+        None,
+        description="Name for this job — used as folder name for dataset & model. "
+                    "Auto-generated from timestamp if not provided.",
+        pattern=r"^[a-zA-Z0-9_\-]+$",
+    ),
+):
     """Submit a new training job to the queue.
 
-    ``job_name`` is used as the folder name for dataset & model.
-    If not provided, a timestamp-based name is generated.
+    ``job_name`` is sent as a query parameter:
 
-    ```json
-    {
-        "roboflow": { "api_key": "...", ... },
-        "training": { "epochs": 100, "lr0": 0.005, ... },
-        "job_name": "my_logo_v1"
-    }
-    ```
+        POST /train?job_name=my_logo_v1
+
+    If not provided, a timestamp-based name is generated.
     """
-    job_name = request.job_name or _generate_job_name()
+    job_name = job_name or _generate_job_name()
 
     # Check if job_name already exists
     dataset_exists = (BASE_DATASET_DIR / job_name).exists()

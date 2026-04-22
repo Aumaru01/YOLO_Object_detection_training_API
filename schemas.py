@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 
 # ---------------------------------------------------------------------------
-# Request body
+# Request body (job_name is sent as query parameter, NOT in body)
 # ---------------------------------------------------------------------------
 class RoboflowConfig(BaseModel):
     """Roboflow dataset source settings."""
@@ -41,19 +41,11 @@ class TrainingConfig(BaseModel):
 
 
 class TrainRequest(BaseModel):
-    """Training request body.
-
-    ``job_name`` is used as the folder name for dataset and model outputs.
-    If omitted, a timestamp-based name is generated automatically.
+    """Training request body — only roboflow + training config.
+    job_name is sent as a query parameter separately.
     """
     roboflow: RoboflowConfig
     training: TrainingConfig = Field(default_factory=TrainingConfig)
-    job_name: Optional[str] = Field(
-        None,
-        description="Name for this job — used as folder name for dataset & model. "
-                    "Auto-generated from timestamp if not provided.",
-        pattern=r"^[a-zA-Z0-9_\-]+$",
-    )
 
     model_config = {"json_schema_extra": {
         "examples": [{
@@ -69,17 +61,7 @@ class TrainRequest(BaseModel):
                 "epochs": 100,
                 "img_size": 640,
                 "batch_size": 4,
-                "patience" : 60,
-                "optimizer" : "AdamW",
-                "lr0" : 0.005,
-                "scale" : 4,
-                "mosaic" : 1.0,
-                "mixup" : 0.2,
-                "copy_paste" : 0.1,
-                "plots" : True,
-                "cache" : True,
             },
-            "job_name": "my_logo_v1",
         }],
     }}
 
