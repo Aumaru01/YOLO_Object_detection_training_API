@@ -75,7 +75,8 @@ class YOLOTrainBackend:
         self.model_dir = BASE_MODEL_DIR / job_name
         self._data_yaml_cache: Optional[Path] = None
 
-        self.dataset_dir.mkdir(parents=True, exist_ok=True)
+        # Only create model dir upfront.
+        # Do NOT create dataset_dir — Roboflow skips download if it already exists.
         self.model_dir.mkdir(parents=True, exist_ok=True)
 
         # Device
