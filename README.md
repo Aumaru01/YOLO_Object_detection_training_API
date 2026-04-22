@@ -63,17 +63,20 @@ Create the required service files by using the provided examples as references:
   - yolo-worker.service.example
   > **Note:** You can duplicate and modify these example files to match your system configuration.
 
-Copy the service files to systemd and enable them:
+<**First time only**> Copy the service files to systemd and enable them:
 
 ```bash
 sudo cp yolo-worker.service /etc/systemd/system/
 sudo cp yolo-api.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable yolo-worker yolo-api
 ```
-
 > **Note:** Before enabling, edit the `.service` files if your paths or username differ from the defaults.
 > Check `WorkingDirectory` and `ExecStart` paths match your environment.
+
+Start service
+```bash
+sudo systemctl enable yolo-worker yolo-api
+```
 
 ## Running
 
