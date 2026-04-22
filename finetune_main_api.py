@@ -9,9 +9,11 @@ Start Worker: rq worker training --with-scheduler
 
 import logging
 import time
+import traceback
 import zipfile
 import uvicorn
 
+from logging.handlers import RotatingFileHandler
 from typing import Optional
 
 from io import BytesIO
@@ -19,8 +21,10 @@ from pathlib import Path
 
 from rq import Queue
 from rq.job import Job
+from rq.exceptions import NoSuchJobError
 from redis import Redis
-from fastapi import FastAPI, HTTPException, Query
+from redis.exceptions import RedisError
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from rq.command import send_stop_job_command
 
@@ -35,14 +39,46 @@ from queue_worker import run_training_job
 from finetune_yolo_backend import BASE_DATASET_DIR, BASE_MODEL_DIR
 
 # ---------------------------------------------------------------------------
-# Logging
+# Logging — rotating file + console, shared across the app
 # ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+LOG_DIR = Path(__file__).resolve().parent / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+LOG_FILE = LOG_DIR / "api.log"
+
+_log_format = logging.Formatter(
+    fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+
+# Root logger gets both console and rotating file handlers.
+_root = logging.getLogger()
+_root.setLevel(logging.INFO)
+
+# Avoid duplicate handlers on reload.
+if not any(isinstance(h, RotatingFileHandler) for h in _root.handlers):
+    _file_handler = RotatingFileHandler(
+        LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
+    )
+    _file_handler.setFormatter(_log_format)
+    _root.addHandler(_file_handler)
+
+if not any(
+    isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler)
+    for h in _root.handlers
+):
+    _console = logging.StreamHandler()
+    _console.setFormatter(_log_format)
+    _root.addHandler(_console)
+
+# Forward uvicorn / fastapi logs into the same handlers.
+for _name in ("uvicorn", "uvicorn.error", "uvicorn.access", "fastapi", "rq.worker"):
+    _lg = logging.getLogger(_name)
+    _lg.handlers.clear()
+    _lg.propagate = True
+    _lg.setLevel(logging.INFO)
+
 logger = logging.getLogger("api_log")
+logger.info("Logging initialised — file=%s", LOG_FILE)
 
 # ---------------------------------------------------------------------------
 # App & Redis Queue
@@ -55,6 +91,31 @@ app = FastAPI(
 
 redis_conn = Redis(host="localhost", port=6379, db=0)
 task_queue = Queue("training", connection=redis_conn, default_timeout=86400)  # 24h timeout
+
+
+# ---------------------------------------------------------------------------
+# Middleware — log every HTTP request
+# ---------------------------------------------------------------------------
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log method, path, status, duration, and client IP for every request."""
+    start = time.perf_counter()
+    client = request.client.host if request.client else "-"
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        duration_ms = (time.perf_counter() - start) * 1000
+        logger.exception(
+            "HTTP %s %s -> 500 in %.1fms (client=%s) | unhandled: %s",
+            request.method, request.url.path, duration_ms, client, exc,
+        )
+        raise
+    duration_ms = (time.perf_counter() - start) * 1000
+    logger.info(
+        "HTTP %s %s -> %d in %.1fms (client=%s)",
+        request.method, request.url.path, response.status_code, duration_ms, client,
+    )
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +158,38 @@ def _job_to_detail(job: Job) -> JobDetail:
         result=job.result if status == JobStatus.FINISHED else None,
         error=error_msg,
     )
+
+
+def _fetch_job(job_id: str) -> Job:
+    """Fetch a job from Redis, with precise error handling + logging.
+
+    Raises
+    ------
+    HTTPException(404) — if the job genuinely doesn't exist.
+    HTTPException(503) — if Redis is unreachable.
+    HTTPException(500) — for any other unexpected failure (e.g. unpickling).
+    """
+    try:
+        return Job.fetch(job_id, connection=redis_conn)
+    except NoSuchJobError:
+        logger.warning("Job lookup failed — id=%s not in Redis.", job_id)
+        raise HTTPException(
+            status_code=404,
+            detail=f"Job '{job_id}' not found (expired, wrong id, or never existed).",
+        )
+    except RedisError as exc:
+        logger.error("Redis error while fetching job %s: %s", job_id, exc)
+        raise HTTPException(status_code=503, detail=f"Redis unavailable: {exc}")
+    except Exception as exc:
+        # Often a serializer / unpickling mismatch between API and worker.
+        logger.error(
+            "Unexpected error fetching job %s: %s\n%s",
+            job_id, exc, traceback.format_exc(),
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load job '{job_id}': {type(exc).__name__}: {exc}",
+        )
 
 
 def _zip_directory(directory: Path) -> BytesIO:
@@ -142,13 +235,35 @@ def submit_training(
             detail=f"Job name '{job_name}' already exists. Choose a different name.",
         )
 
+    # Use job_name as the RQ job_id so /jobs/{job_name} works directly.
+    # Safe: job_name uniqueness is already enforced above by the folder check.
+    # Also guard against re-submitting a name that still exists in Redis
+    # (e.g. a finished job still within result_ttl).
+    try:
+        existing = Job.fetch(job_name, connection=redis_conn)
+    except NoSuchJobError:
+        existing = None
+    except Exception as exc:
+        logger.error("Pre-check fetch failed for %s: %s", job_name, exc)
+        existing = None
+
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Job id '{job_name}' already exists in Redis "
+                f"(status={existing.get_status()}). Choose a different name."
+            ),
+        )
+
     job = task_queue.enqueue(
         run_training_job,
         roboflow=request.roboflow.model_dump(),
         training=request.training.model_dump(),
         job_name=job_name,
+        job_id=job_name,              # ← use job_name as the identifier
         job_timeout=86400,
-        result_ttl=604800,    # keep result 7 days
+        result_ttl=604800,            # keep result 7 days
         failure_ttl=604800,
         meta={"job_name": job_name},
     )
@@ -171,24 +286,22 @@ def submit_training(
 @app.get("/jobs/{job_id}", response_model=JobDetail)
 def get_job_status(job_id: str):
     """Check the status of a specific job."""
-    try:
-        job = Job.fetch(job_id, connection=redis_conn)
-    except Exception:
-        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
-
-    return _job_to_detail(job)
+    logger.info("Fetching job status — id=%s", job_id)
+    job = _fetch_job(job_id)
+    detail = _job_to_detail(job)
+    logger.info("Job %s [%s] -> %s", job_id, detail.job_name, detail.status.value)
+    return detail
 
 
 @app.delete("/jobs/{job_id}", response_model=JobResponse)
 def cancel_job(job_id: str):
     """Cancel a queued or running job."""
-    try:
-        job = Job.fetch(job_id, connection=redis_conn)
-    except Exception:
-        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    logger.info("Cancel request — id=%s", job_id)
+    job = _fetch_job(job_id)
 
     job_name = job.meta.get("job_name", "unknown")
     status = job.get_status()
+    logger.info("Job %s [%s] current status=%s", job_id, job_name, status)
 
     if status == "queued":
         job.cancel()
@@ -200,7 +313,14 @@ def cancel_job(job_id: str):
             message="Job canceled (removed from queue).",
         )
     elif status == "started":
-        send_stop_job_command(redis_conn, job_id)
+        try:
+            send_stop_job_command(redis_conn, job_id)
+        except Exception as exc:
+            logger.error("Failed to send stop signal for %s: %s", job_id, exc)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to send stop signal: {exc}",
+            )
         logger.info("Job %s [%s] stop signal sent (was running).", job_id, job_name)
         return JobResponse(
             job_id=job_id,
@@ -209,6 +329,7 @@ def cancel_job(job_id: str):
             message="Stop signal sent to running job.",
         )
     else:
+        logger.info("Job %s [%s] cannot be canceled (status=%s).", job_id, job_name, status)
         raise HTTPException(
             status_code=400,
             detail=f"Job is already '{status}', cannot cancel.",
@@ -226,8 +347,10 @@ def get_queue_info():
             job = Job.fetch(job_id, connection=redis_conn)
             job_details.append(_job_to_detail(job))
             counts["queued"] += 1
-        except Exception:
-            pass
+        except NoSuchJobError:
+            logger.warning("Queued job id %s missing in Redis (skipped).", job_id)
+        except Exception as exc:
+            logger.error("Failed to load queued job %s: %s", job_id, exc)
 
     for registry, status_key in [
         (task_queue.started_job_registry, "started"),
@@ -239,8 +362,15 @@ def get_queue_info():
                 job = Job.fetch(job_id, connection=redis_conn)
                 job_details.append(_job_to_detail(job))
                 counts[status_key] += 1
-            except Exception:
-                pass
+            except NoSuchJobError:
+                logger.warning(
+                    "%s registry references missing job %s (skipped).",
+                    status_key, job_id,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Failed to load %s job %s: %s", status_key, job_id, exc,
+                )
 
     return QueueInfo(
         queued=counts["queued"],
@@ -304,6 +434,7 @@ def health_check():
         redis_conn.ping()
         return {"status": "healthy", "redis": "connected", "queue_size": len(task_queue)}
     except Exception as e:
+        logger.error("Health check failed — Redis unavailable: %s", e)
         raise HTTPException(status_code=503, detail=f"Redis unavailable: {e}")
 
 
