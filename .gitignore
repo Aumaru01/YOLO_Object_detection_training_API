@@ -1,7 +1,6 @@
 yolo-api.service
 yolo-worker.service
-datasets
-models
-__pycache__
-__pycache__/*
-venv
+
+# Runtime logs
+logs/
+*.log

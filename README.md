@@ -88,8 +88,11 @@ sudo systemctl start yolo-worker yolo-api
 sudo systemctl status yolo-worker yolo-api
 
 # View logs
-journalctl -u yolo-worker -f    # worker logs
-journalctl -u yolo-api -f       # API logs
+journalctl -u yolo-worker -f    # worker logs (systemd)
+journalctl -u yolo-api -f       # API logs (systemd)
+
+# Or tail the app's own rotating log file (API + worker share it):
+tail -f logs/api.log
 
 # Stop
 sudo systemctl stop yolo-worker yolo-api
@@ -243,7 +246,4 @@ Results are stored in Redis for 7 days. Files on disk persist until manually del
 ## Notes
 
 - The queue processes one job at a time to avoid GPU contention. Jobs are executed in FIFO order.
-- Job names must be unique. Submitting a duplicate name returns `409 Conflict`.
-- Job names may only contain letters, numbers, underscores, and hyphens.
-- If the requested device is unavailable (e.g. `cuda` but no GPU), the backend logs a warning and falls back to CPU.
-- Both services auto-restart on failure. After a reboot, they start automatically if enabled.
+- Job names must be unique. Submitting a duplicate name returns `409 Confli
