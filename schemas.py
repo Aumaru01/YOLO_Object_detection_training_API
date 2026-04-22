@@ -38,6 +38,10 @@ class TrainingConfig(BaseModel):
     copy_paste: float = Field(0.1, ge=0, le=1)
     plots: bool = Field(True)
     cache: bool = Field(True)
+    device: str = Field(
+        "cpu",
+        description="Device to train on: 'cpu', 'cuda', 'cuda:0', 'cuda:1', etc.",
+    )
 
 
 class TrainRequest(BaseModel):
@@ -61,15 +65,7 @@ class TrainRequest(BaseModel):
                 "epochs": 100,
                 "img_size": 640,
                 "batch_size": 4,
-                "patience" : 60,
-                "optimizer" : "AdamW",
-                "lr0" : 0.005,
-                "scale" : 0.4,
-                "mosaic" : 1.0,
-                "mixup" : 0.2,
-                "copy_paste" : 0.1,
-                "plots" : True,
-                "cache" : True,
+                "device": "cuda",
             },
         }],
     }}

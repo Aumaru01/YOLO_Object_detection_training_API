@@ -79,9 +79,6 @@ class YOLOTrainBackend:
         # Do NOT create dataset_dir — Roboflow skips download if it already exists.
         self.model_dir.mkdir(parents=True, exist_ok=True)
 
-        # Device
-        self.device = self._select_device()
-
         logger.info("Backend ready — %s", self)
 
     # ------------------------------------------------------------------
@@ -96,18 +93,15 @@ class YOLOTrainBackend:
 
     def _find_data_yaml(self) -> Optional[Path]:
         """Find data.yaml — check root first, then search subdirectories."""
-        # Cached
         if self._data_yaml_cache and self._data_yaml_cache.exists():
             return self._data_yaml_cache
 
-        # Direct path
         direct = self.dataset_dir / "data.yaml"
         if direct.exists():
             self._data_yaml_cache = direct
             return direct
 
-        # Recursive search (Roboflow sometimes nests in subfolder)
-        found = list(self.dataset_dir.rglob("data.yaml"))
+        found = list(self.dataset_dir.rglob("data.yaml")) if self.dataset_dir.exists() else []
         if found:
             self._data_yaml_cache = found[0]
             logger.info("Found data.yaml at: %s", found[0])
@@ -122,15 +116,40 @@ class YOLOTrainBackend:
         return found if found else self.dataset_dir / "data.yaml"
 
     # ------------------------------------------------------------------
-    # Device
+    # Device validation
     # ------------------------------------------------------------------
     @staticmethod
-    def _select_device() -> str:
-        if torch.cuda.is_available():
-            logger.info("Using CUDA: %s", torch.cuda.get_device_name(0))
-            return "cuda"
-        logger.info("CUDA not available — using CPU.")
-        return "cpu"
+    def _validate_device(device: str) -> str:
+        """Validate device and log warning if unavailable."""
+        if device == "cpu":
+            logger.info("Using CPU.")
+            return device
+
+        # User requested CUDA
+        if not torch.cuda.is_available():
+            logger.warning(
+                "Device '%s' requested but CUDA is not available. Falling back to CPU.",
+                device,
+            )
+            return "cpu"
+
+        # Check specific GPU index (e.g. "cuda:1")
+        if ":" in device:
+            try:
+                gpu_index = int(device.split(":")[1])
+                gpu_count = torch.cuda.device_count()
+                if gpu_index >= gpu_count:
+                    logger.warning(
+                        "Device '%s' requested but only %d GPU(s) found. Falling back to 'cuda:0'.",
+                        device, gpu_count,
+                    )
+                    return "cuda:0"
+            except ValueError:
+                logger.warning("Invalid device format '%s'. Falling back to CPU.", device)
+                return "cpu"
+
+        logger.info("Using device: %s (%s)", device, torch.cuda.get_device_name(0))
+        return device
 
     # ------------------------------------------------------------------
     # Dataset
@@ -151,7 +170,7 @@ class YOLOTrainBackend:
         )
 
         # Log what was actually downloaded
-        all_files = list(self.dataset_dir.rglob("*"))
+        all_files = list(self.dataset_dir.rglob("*")) if self.dataset_dir.exists() else []
         logger.info("Downloaded %d files to '%s'.", len(all_files), self.dataset_dir)
         yaml_files = [f for f in all_files if f.name == "data.yaml"]
         if yaml_files:
@@ -173,6 +192,9 @@ class YOLOTrainBackend:
             logger.info("Dataset not found — downloading first.")
             self.download_dataset()
 
+        # Validate device from request body
+        device = self._validate_device(train_params["device"])
+
         train_args: dict[str, Any] = {
             "data": str(self.data_yaml_path),
             "epochs": train_params["epochs"],
@@ -187,14 +209,15 @@ class YOLOTrainBackend:
             "copy_paste": train_params["copy_paste"],
             "plots": train_params["plots"],
             "cache": train_params["cache"],
-            "device": self.device,
+            "device": device,
             "project": str(self.model_dir),
             "save": True,
         }
 
         logger.info(
-            "Training — epochs=%s, batch=%s, lr0=%s, save='%s'",
-            train_args["epochs"], train_args["batch"], train_args["lr0"], self.model_dir,
+            "Training — epochs=%s, batch=%s, lr0=%s, device=%s, save='%s'",
+            train_args["epochs"], train_args["batch"], train_args["lr0"],
+            device, self.model_dir,
         )
 
         results = self.model.train(**train_args)
@@ -205,13 +228,13 @@ class YOLOTrainBackend:
             "model_dir": str(self.model_dir),
             "dataset_dir": str(self.dataset_dir),
             "epochs": train_args["epochs"],
-            "device": self.device,
+            "device": device,
         }
 
     # ------------------------------------------------------------------
     # Evaluation
     # ------------------------------------------------------------------
-    def evaluate(self, img_size: int = 640) -> dict[str, float]:
+    def evaluate(self, train_params: dict[str, Any]) -> dict[str, float]:
         """Run validation and return mAP metrics."""
         if not self.data_yaml_path.exists():
             raise FileNotFoundError(
@@ -219,11 +242,13 @@ class YOLOTrainBackend:
                 "Call download_dataset() first."
             )
 
+        device = self._validate_device(train_params["device"])
+
         logger.info("Running evaluation ...")
         metrics = self.model.val(
             data=str(self.data_yaml_path),
-            imgsz=img_size,
-            device=self.device,
+            imgsz=train_params["img_size"],
+            device=device,
             plots=True,
         )
 
@@ -243,7 +268,7 @@ class YOLOTrainBackend:
 
         self.download_dataset()
         train_result = self.train(train_params)
-        eval_result = self.evaluate(img_size=train_params["img_size"])
+        eval_result = self.evaluate(train_params)
 
         result = {**train_result, **eval_result}
         logger.info("=== Pipeline complete [%s] === Result: %s", self.job_name, result)
@@ -264,5 +289,5 @@ class YOLOTrainBackend:
         return (
             f"YOLOTrainBackend(job={self.job_name!r}, "
             f"project={self.project_name!r}, "
-            f"v{self.version}, model={self.model_name!r}, device={self.device!r})"
+            f"v{self.version}, model={self.model_name!r})"
         )
