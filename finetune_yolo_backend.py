@@ -33,8 +33,8 @@ logger = logging.getLogger("backend_log")
 # ---------------------------------------------------------------------------
 # Base directories
 # ---------------------------------------------------------------------------
-BASE_DATASET_DIR = Path("datasets")
-BASE_MODEL_DIR = Path("models")
+BASE_DATASET_DIR = Path(__file__).resolve().parent / "datasets"
+BASE_MODEL_DIR = Path(__file__).resolve().parent / "models"
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +94,21 @@ class YOLOTrainBackend:
 
     @property
     def data_yaml_path(self) -> Path:
-        return self.dataset_dir / "data.yaml"
+        """Find data.yaml — check root first, then search subdirectories.
+
+        Roboflow sometimes nests the dataset inside a subfolder.
+        """
+        direct = self.dataset_dir / "data.yaml"
+        if direct.exists():
+            return direct
+
+        # Search recursively
+        found = list(self.dataset_dir.rglob("data.yaml"))
+        if found:
+            return found[0]
+
+        # Return the expected path (will trigger download if checked)
+        return direct
 
     # ------------------------------------------------------------------
     # Device
