@@ -126,12 +126,11 @@ class YOLOTrainBackend:
             return device
 
         # User requested CUDA
-        if not torch.cuda.is_available():
-            logger.warning(
-                "Device '%s' requested but CUDA is not available. Falling back to CPU.",
-                device,
-            )
-            return "cpu"
+        if device.startswith("cuda") and not torch.cuda.is_available():
+            raise RuntimeError(
+            f"Device '{device}' requested but CUDA is not available. "
+            "Please check CUDA installation or use 'cpu'."
+        )
 
         # Check specific GPU index (e.g. "cuda:1")
         if ":" in device:

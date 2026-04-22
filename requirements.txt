@@ -9,5 +9,6 @@ rq>=1.16.0
 
 # ML
 ultralytics>=8.1.0
-torch>=2.0.0
+torch==2.2.2+cu121
+torchvision==0.17.2+cu121
 roboflow>=1.1.0
