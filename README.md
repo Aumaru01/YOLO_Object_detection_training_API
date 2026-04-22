@@ -58,6 +58,11 @@ sudo systemctl start redis
 
 ### 3. Install services
 
+Create the required service files by using the provided examples as references:
+  - yolo-api.service.example
+  - yolo-worker.service.example
+  > **Note:** You can duplicate and modify these example files to match your system configuration.
+
 Copy the service files to systemd and enable them:
 
 ```bash
