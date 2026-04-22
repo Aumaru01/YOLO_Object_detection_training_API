@@ -130,7 +130,7 @@ Response (`202 Accepted`):
 
 ```json
 {
-  "job_id": "a1b2c3d4-...",
+  "job_id": "my_logo_v1",
   "job_name": "my_logo_v1",
   "status": "queued",
   "message": "Training job 'my_logo_v1' submitted to queue.",
@@ -138,17 +138,19 @@ Response (`202 Accepted`):
 }
 ```
 
+> `job_id` is the same as `job_name` — uniqueness is enforced, so you can use the human-readable name in every endpoint below.
+
 ### `GET /jobs/{job_id}` — Check job status
 
 ```bash
-curl http://localhost:1234/jobs/a1b2c3d4-...
+curl http://localhost:1234/jobs/my_logo_v1
 ```
 
 Response:
 
 ```json
 {
-  "job_id": "a1b2c3d4-...",
+  "job_id": "my_logo_v1",
   "job_name": "my_logo_v1",
   "status": "finished",
   "message": "Job finished",
@@ -173,7 +175,7 @@ Status values: `queued`, `started`, `finished`, `failed`, `canceled`.
 ### `DELETE /jobs/{job_id}` — Cancel a job
 
 ```bash
-curl -X DELETE http://localhost:1234/jobs/a1b2c3d4-...
+curl -X DELETE http://localhost:1234/jobs/my_logo_v1
 ```
 
 ### `GET /queue` — View queue status
@@ -241,9 +243,4 @@ Each job executes three steps in sequence:
 2. **Train** — Fine-tunes the YOLOv8 model. Weights and plots are saved to `models/{job_name}/`.
 3. **Evaluate** — Runs validation and returns mAP50 and mAP50-95 metrics.
 
-Results are stored in Redis for 7 days. Files on disk persist until manually deleted.
-
-## Notes
-
-- The queue processes one job at a time to avoid GPU contention. Jobs are executed in FIFO order.
-- Job names must be unique. Submitting a duplicate name returns `409 Confli
+Results are stored in Redis

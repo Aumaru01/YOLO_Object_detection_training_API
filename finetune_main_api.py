@@ -235,13 +235,35 @@ def submit_training(
             detail=f"Job name '{job_name}' already exists. Choose a different name.",
         )
 
+    # Use job_name as the RQ job_id so /jobs/{job_name} works directly.
+    # Safe: job_name uniqueness is already enforced above by the folder check.
+    # Also guard against re-submitting a name that still exists in Redis
+    # (e.g. a finished job still within result_ttl).
+    try:
+        existing = Job.fetch(job_name, connection=redis_conn)
+    except NoSuchJobError:
+        existing = None
+    except Exception as exc:
+        logger.error("Pre-check fetch failed for %s: %s", job_name, exc)
+        existing = None
+
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Job id '{job_name}' already exists in Redis "
+                f"(status={existing.get_status()}). Choose a different name."
+            ),
+        )
+
     job = task_queue.enqueue(
         run_training_job,
         roboflow=request.roboflow.model_dump(),
         training=request.training.model_dump(),
         job_name=job_name,
+        job_id=job_name,              # ← use job_name as the identifier
         job_timeout=86400,
-        result_ttl=604800,    # keep result 7 days
+        result_ttl=604800,            # keep result 7 days
         failure_ttl=604800,
         meta={"job_name": job_name},
     )
@@ -412,6 +434,7 @@ def health_check():
         redis_conn.ping()
         return {"status": "healthy", "redis": "connected", "queue_size": len(task_queue)}
     except Exception as e:
+        logger.error("Health check failed — Redis unavailable: %s", e)
         raise HTTPException(status_code=503, detail=f"Redis unavailable: {e}")
 
 
