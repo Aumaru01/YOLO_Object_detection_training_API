@@ -1,5 +1,6 @@
 yolo-api.service
 yolo-worker.service
+*.pt
 
 # Runtime logs
 logs/
