@@ -73,6 +73,7 @@ class YOLOTrainBackend:
         self.job_name = job_name
         self.dataset_dir = BASE_DATASET_DIR / job_name
         self.model_dir = BASE_MODEL_DIR / job_name
+        self._data_yaml_cache: Optional[Path] = None
 
         self.dataset_dir.mkdir(parents=True, exist_ok=True)
         self.model_dir.mkdir(parents=True, exist_ok=True)
@@ -92,23 +93,32 @@ class YOLOTrainBackend:
             self._model = YOLO(self.model_name)
         return self._model
 
-    @property
-    def data_yaml_path(self) -> Path:
-        """Find data.yaml — check root first, then search subdirectories.
+    def _find_data_yaml(self) -> Optional[Path]:
+        """Find data.yaml — check root first, then search subdirectories."""
+        # Cached
+        if self._data_yaml_cache and self._data_yaml_cache.exists():
+            return self._data_yaml_cache
 
-        Roboflow sometimes nests the dataset inside a subfolder.
-        """
+        # Direct path
         direct = self.dataset_dir / "data.yaml"
         if direct.exists():
+            self._data_yaml_cache = direct
             return direct
 
-        # Search recursively
+        # Recursive search (Roboflow sometimes nests in subfolder)
         found = list(self.dataset_dir.rglob("data.yaml"))
         if found:
+            self._data_yaml_cache = found[0]
+            logger.info("Found data.yaml at: %s", found[0])
             return found[0]
 
-        # Return the expected path (will trigger download if checked)
-        return direct
+        return None
+
+    @property
+    def data_yaml_path(self) -> Path:
+        """Return data.yaml path, or expected path if not yet downloaded."""
+        found = self._find_data_yaml()
+        return found if found else self.dataset_dir / "data.yaml"
 
     # ------------------------------------------------------------------
     # Device
@@ -126,8 +136,8 @@ class YOLOTrainBackend:
     # ------------------------------------------------------------------
     def download_dataset(self, *, force: bool = False) -> Path:
         """Download dataset from Roboflow."""
-        if self.data_yaml_path.exists() and not force:
-            logger.info("Dataset already at '%s' — skipping.", self.dataset_dir)
+        if self._find_data_yaml() and not force:
+            logger.info("Dataset already at '%s' — skipping.", self.data_yaml_path)
             return self.dataset_dir
 
         logger.info(
@@ -138,7 +148,19 @@ class YOLOTrainBackend:
         project.version(self.version).download(
             self.dataset_format, location=str(self.dataset_dir),
         )
-        logger.info("Dataset saved to '%s'.", self.dataset_dir)
+
+        # Log what was actually downloaded
+        all_files = list(self.dataset_dir.rglob("*"))
+        logger.info("Downloaded %d files to '%s'.", len(all_files), self.dataset_dir)
+        yaml_files = [f for f in all_files if f.name == "data.yaml"]
+        if yaml_files:
+            logger.info("Found data.yaml at: %s", yaml_files[0])
+            self._data_yaml_cache = yaml_files[0]
+        else:
+            logger.error("data.yaml NOT FOUND after download! Files in dir:")
+            for f in sorted(all_files)[:20]:
+                logger.error("  %s", f)
+
         return self.dataset_dir
 
     # ------------------------------------------------------------------

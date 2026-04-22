@@ -64,7 +64,7 @@ class TrainRequest(BaseModel):
                 "patience" : 60,
                 "optimizer" : "AdamW",
                 "lr0" : 0.005,
-                "scale" : 4,
+                "scale" : 0.4,
                 "mosaic" : 1.0,
                 "mixup" : 0.2,
                 "copy_paste" : 0.1,
