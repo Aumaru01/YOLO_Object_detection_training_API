@@ -23,6 +23,8 @@ The system separates the API layer from training execution. When a training requ
 ├── schemas.py                  # Pydantic models — request/response validation
 ├── queue_worker.py             # RQ task — bridges API to backend
 ├── finetune_yolo_backend.py    # Core training backend — YOLO + Roboflow logic
+├── yolo-api.service            # systemd service — API server
+├── yolo-worker.service         # systemd service — RQ worker
 └── requirements.txt            # Python dependencies
 ```
 
@@ -41,37 +43,63 @@ Output directories (created automatically):
 
 ## Setup
 
-```bash
-# Install dependencies
-pip install -r requirements.txt
+### 1. Install dependencies
 
-# Start Redis (if not already running as a service)
+```bash
+pip install -r requirements.txt
+```
+
+### 2. Start Redis
+
+```bash
 sudo systemctl enable redis
 sudo systemctl start redis
 ```
 
-## Running
+### 3. Install services
 
-Two processes need to be running:
+Copy the service files to systemd and enable them:
 
 ```bash
-# 1. RQ Worker — executes training jobs from the queue
-rq worker training --with-scheduler
-
-# 2. API Server
-python -m finetune_main_api
+sudo cp yolo-worker.service /etc/systemd/system/
+sudo cp yolo-api.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable yolo-worker yolo-api
 ```
 
-Interactive API docs are available at `http://localhost:1234/docs` once the server is running.
+> **Note:** Before enabling, edit the `.service` files if your paths or username differ from the defaults.
+> Check `WorkingDirectory` and `ExecStart` paths match your environment.
+
+## Running
+
+```bash
+# Start both services
+sudo systemctl start yolo-worker yolo-api
+
+# Check status
+sudo systemctl status yolo-worker yolo-api
+
+# View logs
+journalctl -u yolo-worker -f    # worker logs
+journalctl -u yolo-api -f       # API logs
+
+# Stop
+sudo systemctl stop yolo-worker yolo-api
+
+# Restart (e.g. after code changes)
+sudo systemctl restart yolo-worker yolo-api
+```
+
+Interactive API docs are available at `http://localhost:1234/docs` once the API service is running.
 
 ## API Endpoints
 
 ### `POST /train` — Submit a training job
 
-Accepts a JSON body and enqueues the job. Returns immediately with a `job_id` and `job_name`.
+Accepts a JSON body and enqueues the job. `job_name` is sent as a query parameter. Returns immediately with a `job_id` and `job_name`.
 
 ```bash
-curl -X POST http://localhost:1234/train \
+curl -X POST "http://localhost:1234/train?job_name=my_logo_v1" \
   -H "Content-Type: application/json" \
   -d '{
     "roboflow": {
@@ -79,9 +107,9 @@ curl -X POST http://localhost:1234/train \
     },
     "training": {
       "epochs": 100,
-      "batch_size": 4
-    },
-    "job_name": "my_logo_v1"
+      "batch_size": 4,
+      "device": "cuda"
+    }
   }'
 ```
 
@@ -191,7 +219,8 @@ Only `roboflow.api_key` is required. Everything else has defaults.
 | | `copy_paste` | float | `0.1` | Copy-paste augmentation |
 | | `plots` | bool | `true` | Save training plots |
 | | `cache` | bool | `true` | Cache images in RAM |
-| — | `job_name` | string | auto-generated | Folder name for dataset & model outputs |
+| | `device` | string | `cpu` | Device: `cpu`, `cuda`, `cuda:0`, `cuda:1` |
+| — | `job_name` | query param | auto-generated | Folder name for dataset & model outputs |
 
 ## Training Pipeline
 
@@ -208,4 +237,5 @@ Results are stored in Redis for 7 days. Files on disk persist until manually del
 - The queue processes one job at a time to avoid GPU contention. Jobs are executed in FIFO order.
 - Job names must be unique. Submitting a duplicate name returns `409 Conflict`.
 - Job names may only contain letters, numbers, underscores, and hyphens.
-- GPU is auto-detected. If CUDA is available, training runs on GPU; otherwise it falls back to CPU.
+- If the requested device is unavailable (e.g. `cuda` but no GPU), the backend logs a warning and falls back to CPU.
+- Both services auto-restart on failure. After a reboot, they start automatically if enabled.

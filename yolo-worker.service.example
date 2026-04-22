@@ -1,0 +1,16 @@
+[Unit]
+Description=YOLOv8 Training Queue Worker
+After=redis.service
+Requires=redis.service
+
+[Service]
+Type=simple
+User=aum
+WorkingDirectory=./<workingdir_to_your_project>/YOLO_Object_detection_training_API
+ExecStart=./<workingdir_to_your_project>/YOLO_Object_detection_training_API/venv/bin/rq worker training --with-scheduler
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

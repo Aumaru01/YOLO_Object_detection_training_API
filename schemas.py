@@ -55,8 +55,8 @@ class TrainRequest(BaseModel):
         "examples": [{
             "roboflow": {
                 "api_key": "YOUR_API_KEY",
-                "workspace": "jakapong-workspace",
-                "project_name": "logo-detection-project-iihu1",
+                "workspace": "workspace-name",
+                "project_name": "projectID",
                 "version": 1,
                 "dataset_format": "yolov8",
             },

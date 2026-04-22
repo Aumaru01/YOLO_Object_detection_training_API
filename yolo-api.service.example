@@ -1,0 +1,16 @@
+[Unit]
+Description=YOLOv8 Training API
+After=redis.service yolo-worker.service
+Requires=redis.service
+
+[Service]
+Type=simple
+User=user
+WorkingDirectory=./<workingdir_to_your_project>/YOLO_Object_detection_training_API
+ExecStart=./<workingdir_to_your_venv>YOLO_Object_detection_training_API/venv/bin/python -m finetune_main_api
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
