@@ -3,11 +3,13 @@ YOLO Fine-tuning Backend
 ==========================
 Pure backend — receives all parameters directly (no config file).
 Called by the queue worker with values from the API request body.
+
+Files are stored under:
+  datasets/{job_name}/    — downloaded dataset
+  models/{job_name}/      — trained model weights & plots
 """
 
 import os
-import time
-import torch
 import shutil
 import logging
 
@@ -16,6 +18,7 @@ from ultralytics import YOLO
 from roboflow import Roboflow
 from typing import Any, Optional
 
+import torch
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -27,6 +30,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("backend_log")
 
+# ---------------------------------------------------------------------------
+# Base directories
+# ---------------------------------------------------------------------------
+BASE_DATASET_DIR = Path("datasets")
+BASE_MODEL_DIR = Path("models")
+
 
 # ---------------------------------------------------------------------------
 # Backend class
@@ -34,8 +43,9 @@ logger = logging.getLogger("backend_log")
 class YOLOTrainBackend:
     """Stateless-ish training backend.
 
-    Every parameter comes from the caller (API → worker → here).
-    No config file, no hidden defaults.
+    Every parameter comes from the caller (API -> worker -> here).
+    Files are organized by job_name:
+      datasets/{job_name}/   and   models/{job_name}/
     """
 
     def __init__(
@@ -46,8 +56,7 @@ class YOLOTrainBackend:
         version: int,
         dataset_format: str,
         model: str,
-        save_dataset_dir: str,
-        save_model_dir: str,
+        job_name: str,
     ) -> None:
         # Roboflow
         self.rf = Roboflow(api_key=api_key)
@@ -60,13 +69,13 @@ class YOLOTrainBackend:
         self.model_name = model
         self._model: Optional[YOLO] = None
 
-        # Paths
-        self.save_dataset_dir = Path(save_dataset_dir)
-        self.save_dataset_dir.mkdir(parents=True, exist_ok=True)
+        # Paths based on job_name
+        self.job_name = job_name
+        self.dataset_dir = BASE_DATASET_DIR / job_name
+        self.model_dir = BASE_MODEL_DIR / job_name
 
-        timestamp = time.strftime("%Y%m%d-%H%M%S")
-        self.save_model_dir = f"{save_model_dir}-{timestamp}"
-        os.makedirs(self.save_model_dir, exist_ok=True)
+        self.dataset_dir.mkdir(parents=True, exist_ok=True)
+        self.model_dir.mkdir(parents=True, exist_ok=True)
 
         # Device
         self.device = self._select_device()
@@ -85,7 +94,7 @@ class YOLOTrainBackend:
 
     @property
     def data_yaml_path(self) -> Path:
-        return self.save_dataset_dir / "data.yaml"
+        return self.dataset_dir / "data.yaml"
 
     # ------------------------------------------------------------------
     # Device
@@ -104,8 +113,8 @@ class YOLOTrainBackend:
     def download_dataset(self, *, force: bool = False) -> Path:
         """Download dataset from Roboflow."""
         if self.data_yaml_path.exists() and not force:
-            logger.info("Dataset already at '%s' — skipping.", self.save_dataset_dir)
-            return self.save_dataset_dir
+            logger.info("Dataset already at '%s' — skipping.", self.dataset_dir)
+            return self.dataset_dir
 
         logger.info(
             "Downloading: %s/%s v%d (%s) ...",
@@ -113,26 +122,16 @@ class YOLOTrainBackend:
         )
         project = self.rf.workspace(self.workspace).project(self.project_name)
         project.version(self.version).download(
-            self.dataset_format, location=str(self.save_dataset_dir),
+            self.dataset_format, location=str(self.dataset_dir),
         )
-        logger.info("Dataset saved to '%s'.", self.save_dataset_dir)
-        return self.save_dataset_dir
+        logger.info("Dataset saved to '%s'.", self.dataset_dir)
+        return self.dataset_dir
 
     # ------------------------------------------------------------------
     # Training
     # ------------------------------------------------------------------
     def train(self, train_params: dict[str, Any]) -> dict[str, Any]:
-        """Run training with the given hyperparameters.
-
-        Parameters
-        ----------
-        train_params : dict
-            Hyperparameters from TrainingConfig (epochs, lr0, etc.)
-
-        Returns
-        -------
-        dict with save_model_dir and basic metrics.
-        """
+        """Run training with the given hyperparameters."""
         if not self.data_yaml_path.exists():
             logger.info("Dataset not found — downloading first.")
             self.download_dataset()
@@ -152,20 +151,22 @@ class YOLOTrainBackend:
             "plots": train_params["plots"],
             "cache": train_params["cache"],
             "device": self.device,
-            "project": self.save_model_dir,
+            "project": str(self.model_dir),
             "save": True,
         }
 
         logger.info(
             "Training — epochs=%s, batch=%s, lr0=%s, save='%s'",
-            train_args["epochs"], train_args["batch"], train_args["lr0"], self.save_model_dir,
+            train_args["epochs"], train_args["batch"], train_args["lr0"], self.model_dir,
         )
 
         results = self.model.train(**train_args)
         logger.info("Training complete.")
 
         return {
-            "save_model_dir": self.save_model_dir,
+            "job_name": self.job_name,
+            "model_dir": str(self.model_dir),
+            "dataset_dir": str(self.dataset_dir),
             "epochs": train_args["epochs"],
             "device": self.device,
         }
@@ -197,38 +198,34 @@ class YOLOTrainBackend:
         return result
 
     # ------------------------------------------------------------------
-    # Full pipeline (download → train → evaluate)
+    # Full pipeline (download -> train -> evaluate)
     # ------------------------------------------------------------------
     def run_pipeline(self, train_params: dict[str, Any]) -> dict[str, Any]:
-        """Execute the full pipeline: download → train → evaluate.
-
-        This is the main entry point called by the queue worker.
-        """
-        logger.info("=== Starting full pipeline ===")
+        """Execute the full pipeline: download -> train -> evaluate."""
+        logger.info("=== Starting full pipeline [%s] ===", self.job_name)
 
         self.download_dataset()
         train_result = self.train(train_params)
         eval_result = self.evaluate(img_size=train_params["img_size"])
 
         result = {**train_result, **eval_result}
-        logger.info("=== Pipeline complete === Result: %s", result)
+        logger.info("=== Pipeline complete [%s] === Result: %s", self.job_name, result)
         return result
 
     # ------------------------------------------------------------------
     # Cleanup
     # ------------------------------------------------------------------
     def cleanup_dataset(self) -> None:
-        if self.save_dataset_dir.exists():
-            shutil.rmtree(self.save_dataset_dir)
-            logger.info("Cleaned up '%s'.", self.save_dataset_dir)
+        if self.dataset_dir.exists():
+            shutil.rmtree(self.dataset_dir)
+            logger.info("Cleaned up '%s'.", self.dataset_dir)
 
     # ------------------------------------------------------------------
     # Repr
     # ------------------------------------------------------------------
     def __repr__(self) -> str:
         return (
-            f"YOLOTrainBackend(project={self.project_name!r}, "
+            f"YOLOTrainBackend(job={self.job_name!r}, "
+            f"project={self.project_name!r}, "
             f"v{self.version}, model={self.model_name!r}, device={self.device!r})"
         )
-
-        

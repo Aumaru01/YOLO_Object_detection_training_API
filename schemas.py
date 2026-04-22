@@ -1,6 +1,5 @@
 """
 Pydantic schemas — request/response models for the training API.
-Structure mirrors the old config.yaml so the body feels familiar.
 """
 
 from __future__ import annotations
@@ -13,7 +12,7 @@ from pydantic import BaseModel, Field
 
 
 # ---------------------------------------------------------------------------
-# Request body (same shape as config.yaml)
+# Request body
 # ---------------------------------------------------------------------------
 class RoboflowConfig(BaseModel):
     """Roboflow dataset source settings."""
@@ -41,17 +40,20 @@ class TrainingConfig(BaseModel):
     cache: bool = Field(True)
 
 
-class PathsConfig(BaseModel):
-    """Output paths."""
-    save_dataset_dir: str = Field("datasets")
-    save_model_dir: str = Field("runs/train")
-
-
 class TrainRequest(BaseModel):
-    """Full training request body — same structure as the old config.yaml."""
+    """Training request body.
+
+    ``job_name`` is used as the folder name for dataset and model outputs.
+    If omitted, a timestamp-based name is generated automatically.
+    """
     roboflow: RoboflowConfig
     training: TrainingConfig = Field(default_factory=TrainingConfig)
-    paths: PathsConfig = Field(default_factory=PathsConfig)
+    job_name: Optional[str] = Field(
+        None,
+        description="Name for this job — used as folder name for dataset & model. "
+                    "Auto-generated from timestamp if not provided.",
+        pattern=r"^[a-zA-Z0-9_\-]+$",
+    )
 
     model_config = {"json_schema_extra": {
         "examples": [{
@@ -67,11 +69,17 @@ class TrainRequest(BaseModel):
                 "epochs": 100,
                 "img_size": 640,
                 "batch_size": 4,
+                "patience" : 60,
+                "optimizer" : "AdamW",
+                "lr0" : 0.005,
+                "scale" : 4,
+                "mosaic" : 1.0,
+                "mixup" : 0.2,
+                "copy_paste" : 0.1,
+                "plots" : True,
+                "cache" : True,
             },
-            "paths": {
-                "save_dataset_dir": "datasets",
-                "save_model_dir": "runs/train",
-            },
+            "job_name": "my_logo_v1",
         }],
     }}
 
@@ -90,14 +98,16 @@ class JobStatus(str, Enum):
 class JobResponse(BaseModel):
     """Returned when a job is submitted."""
     job_id: str
+    job_name: str
     status: JobStatus
     message: str
-    position: Optional[int] = None  # position in queue
+    position: Optional[int] = None
 
 
 class JobDetail(BaseModel):
     """Detailed job info for status checks."""
     job_id: str
+    job_name: Optional[str] = None
     status: JobStatus
     message: str
     created_at: Optional[datetime] = None
@@ -114,4 +124,3 @@ class QueueInfo(BaseModel):
     finished: int
     failed: int
     jobs: list[JobDetail]
-    

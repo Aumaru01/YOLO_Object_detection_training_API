@@ -8,11 +8,13 @@ REST API for fine-tuning YOLOv8 models on logo detection datasets from Roboflow 
 Client ──POST /train──▶ FastAPI ──enqueue──▶ Redis Queue ──▶ RQ Worker ──▶ YOLOTrainBackend
                            │                                                    │
                      GET /jobs/:id                                    download → train → evaluate
-                     GET /queue
-                     DELETE /jobs/:id
+                     GET /queue                                                 │
+                     DELETE /jobs/:id                                  datasets/{job_name}/
+                     GET /download_dataset/:name                      models/{job_name}/
+                     GET /download_model/:name
 ```
 
-The system separates the API layer from training execution. When a training request comes in, the API validates the payload, enqueues a job into Redis, and immediately returns a `job_id`. A dedicated RQ worker picks jobs off the queue one at a time and runs the full pipeline (dataset download, training, evaluation). This means long-running training doesn't block the API, multiple requests get queued in order, and clients can poll for status at any time.
+The system separates the API layer from training execution. When a training request comes in, the API validates the payload, enqueues a job into Redis, and immediately returns a `job_id` and `job_name`. A dedicated RQ worker picks jobs off the queue one at a time and runs the full pipeline (dataset download, training, evaluation). All outputs are stored under the `job_name` so they can be downloaded later.
 
 ## Project Structure
 
@@ -20,8 +22,15 @@ The system separates the API layer from training execution. When a training requ
 ├── finetune_main_api.py        # FastAPI application — routes and queue setup
 ├── schemas.py                  # Pydantic models — request/response validation
 ├── queue_worker.py             # RQ task — bridges API to backend
-├── finetune_yolo_backend.py     # Core training backend — YOLO + Roboflow logic
-└── requirements.txt             # Python dependencies
+├── finetune_yolo_backend.py    # Core training backend — YOLO + Roboflow logic
+└── requirements.txt            # Python dependencies
+```
+
+Output directories (created automatically):
+
+```
+├── datasets/{job_name}/        # Downloaded dataset for each job
+└── models/{job_name}/          # Trained model weights & plots for each job
 ```
 
 ## Requirements
@@ -36,23 +45,6 @@ The system separates the API layer from training execution. When a training requ
 # Install dependencies
 pip install -r requirements.txt
 
-# Install redis (if not install yet)
-## Linux
-sudo apt-get install lsb-release curl gpg
-curl -fsSL https://packages.redis.io/gpg | sudo gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg
-sudo chmod 644 /usr/share/keyrings/redis-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/redis.list
-sudo apt-get update
-sudo apt-get install redis
-
-## Window
-curl -fsSL https://packages.redis.io/gpg | sudo gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg
-
-echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/redis.list
-
-sudo apt-get update
-sudo apt-get install redis
-
 # Start Redis (if not already running as a service)
 sudo systemctl enable redis
 sudo systemctl start redis
@@ -60,16 +52,13 @@ sudo systemctl start redis
 
 ## Running
 
-Three processes need to be running:
+Two processes need to be running:
 
 ```bash
-# 1. Redis (should already be running as a systemd service)
-sudo systemctl status redis
-
-# 2. RQ Worker — executes training jobs from the queue
+# 1. RQ Worker — executes training jobs from the queue
 rq worker training --with-scheduler
 
-# 3. API Server
+# 2. API Server
 python -m finetune_main_api
 ```
 
@@ -79,56 +68,33 @@ Interactive API docs are available at `http://localhost:1234/docs` once the serv
 
 ### `POST /train` — Submit a training job
 
-Accepts a JSON body and enqueues the job. Returns immediately with a `job_id`.
+Accepts a JSON body and enqueues the job. Returns immediately with a `job_id` and `job_name`.
 
 ```bash
 curl -X POST http://localhost:1234/train \
   -H "Content-Type: application/json" \
   -d '{
     "roboflow": {
-      "api_key": "YOUR_ROBOFLOW_API_KEY",
-      "workspace": "jakapong-workspace",
-      "project_name": "logo-detection-project-iihu1",
-      "version": 1,
-      "dataset_format": "yolov8"
+      "api_key": "YOUR_ROBOFLOW_API_KEY"
     },
     "training": {
-      "model": "yolov8m.pt",
       "epochs": 100,
-      "img_size": 640,
-      "batch_size": 4,
-      "patience": 60,
-      "optimizer": "AdamW",
-      "lr0": 0.005,
-      "scale": 0.4,
-      "mosaic": 1.0,
-      "mixup": 0.2,
-      "copy_paste": 0.1,
-      "plots": true,
-      "cache": true
+      "batch_size": 4
     },
-    "paths": {
-      "save_dataset_dir": "datasets",
-      "save_model_dir": "runs/train"
-    }
+    "job_name": "my_logo_v1"
   }'
 ```
 
-Only `roboflow.api_key` is required. Everything else has defaults, so the minimal request is:
-
-```bash
-curl -X POST http://localhost:1234/train \
-  -H "Content-Type: application/json" \
-  -d '{"roboflow": {"api_key": "YOUR_KEY"}}'
-```
+Only `roboflow.api_key` is required. If `job_name` is omitted, a timestamp-based name is generated automatically (e.g. `job_20260421_143000`).
 
 Response (`202 Accepted`):
 
 ```json
 {
   "job_id": "a1b2c3d4-...",
+  "job_name": "my_logo_v1",
   "status": "queued",
-  "message": "Training job submitted to queue.",
+  "message": "Training job 'my_logo_v1' submitted to queue.",
   "position": 1
 }
 ```
@@ -144,13 +110,16 @@ Response:
 ```json
 {
   "job_id": "a1b2c3d4-...",
+  "job_name": "my_logo_v1",
   "status": "finished",
   "message": "Job finished",
   "created_at": "2026-04-21T10:00:00",
   "started_at": "2026-04-21T10:00:05",
   "ended_at": "2026-04-21T12:30:00",
   "result": {
-    "save_model_dir": "runs/train-20260421-100005",
+    "job_name": "my_logo_v1",
+    "model_dir": "models/my_logo_v1",
+    "dataset_dir": "datasets/my_logo_v1",
     "epochs": 100,
     "device": "cuda",
     "mAP50": 0.8923,
@@ -164,23 +133,35 @@ Status values: `queued`, `started`, `finished`, `failed`, `canceled`.
 
 ### `DELETE /jobs/{job_id}` — Cancel a job
 
-Removes a queued job or sends a stop signal to a running job.
-
 ```bash
 curl -X DELETE http://localhost:1234/jobs/a1b2c3d4-...
 ```
 
 ### `GET /queue` — View queue status
 
-Returns counts and details for all jobs across all states.
-
 ```bash
 curl http://localhost:1234/queue
 ```
 
-### `GET /health` — Health check
+### `GET /download_dataset/{job_name}` — Download dataset
 
-Verifies Redis connectivity and reports queue size.
+Downloads the dataset folder as a zip file.
+
+```bash
+curl -OJ http://localhost:1234/download_dataset/my_logo_v1
+# → my_logo_v1_dataset.zip
+```
+
+### `GET /download_model/{job_name}` — Download trained model
+
+Downloads the model folder (weights, plots, etc.) as a zip file.
+
+```bash
+curl -OJ http://localhost:1234/download_model/my_logo_v1
+# → my_logo_v1_model.zip
+```
+
+### `GET /health` — Health check
 
 ```bash
 curl http://localhost:1234/health
@@ -188,7 +169,7 @@ curl http://localhost:1234/health
 
 ## Request Body Reference
 
-All fields under `training` and `paths` have defaults. Only `roboflow.api_key` is required.
+Only `roboflow.api_key` is required. Everything else has defaults.
 
 | Section | Field | Type | Default | Description |
 |---------|-------|------|---------|-------------|
@@ -209,4 +190,22 @@ All fields under `training` and `paths` have defaults. Only `roboflow.api_key` i
 | | `mixup` | float | `0.2` | MixUp augmentation |
 | | `copy_paste` | float | `0.1` | Copy-paste augmentation |
 | | `plots` | bool | `true` | Save training plots |
-| | `cache` | bool | `true`
+| | `cache` | bool | `true` | Cache images in RAM |
+| — | `job_name` | string | auto-generated | Folder name for dataset & model outputs |
+
+## Training Pipeline
+
+Each job executes three steps in sequence:
+
+1. **Download** — Fetches the dataset from Roboflow into `datasets/{job_name}/`.
+2. **Train** — Fine-tunes the YOLOv8 model. Weights and plots are saved to `models/{job_name}/`.
+3. **Evaluate** — Runs validation and returns mAP50 and mAP50-95 metrics.
+
+Results are stored in Redis for 7 days. Files on disk persist until manually deleted.
+
+## Notes
+
+- The queue processes one job at a time to avoid GPU contention. Jobs are executed in FIFO order.
+- Job names must be unique. Submitting a duplicate name returns `409 Conflict`.
+- Job names may only contain letters, numbers, underscores, and hyphens.
+- GPU is auto-detected. If CUDA is available, training runs on GPU; otherwise it falls back to CPU.
