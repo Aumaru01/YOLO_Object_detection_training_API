@@ -1,0 +1,4 @@
+DIR_FOR_SAVE_DATA: /home/ai-model/logo_detection/dataset
+DIR_FOR_SAVE_MODELS: /home/ai-model/logo_detection/model
+LOG_PATH: /home/ai-model/logo_detection/logs
+MODEL_NAME: test

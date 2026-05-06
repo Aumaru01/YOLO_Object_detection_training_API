@@ -11,6 +11,8 @@ import logging
 import time
 import traceback
 import zipfile
+
+import yaml
 import uvicorn
 
 from logging.handlers import RotatingFileHandler
@@ -36,13 +38,20 @@ from schemas import (
     QueueInfo,
 )
 from queue_worker import run_training_job
-from finetune_yolo_backend import BASE_DATASET_DIR, BASE_MODEL_DIR
-
+# ---------------------------------------------------------------------------
+# Read Config
+# ---------------------------------------------------------------------------
+cfg = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8")) or {}
+BASE_DATASET_DIR = Path(cfg.get("DIR_FOR_SAVE_DATA"))
+BASE_MODEL_DIR = Path(cfg.get("DIR_FOR_SAVE_MODELS"))
+LOG_DIR = Path(cfg.get("LOG_PATH"))
 # ---------------------------------------------------------------------------
 # Logging — rotating file + console, shared across the app
 # ---------------------------------------------------------------------------
-LOG_DIR = Path(__file__).resolve().parent / "logs"
+BASE_DATASET_DIR.mkdir(exist_ok=True)
+BASE_MODEL_DIR.mkdir(exist_ok=True)
 LOG_DIR.mkdir(exist_ok=True)
+
 LOG_FILE = LOG_DIR / "api.log"
 
 _log_format = logging.Formatter(

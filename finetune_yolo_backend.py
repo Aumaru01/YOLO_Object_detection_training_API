@@ -12,6 +12,7 @@ Files are stored under:
 import os
 import shutil
 import logging
+import yaml
 
 from pathlib import Path
 from ultralytics import YOLO
@@ -19,6 +20,13 @@ from roboflow import Roboflow
 from typing import Any, Optional
 
 import torch
+
+# ---------------------------------------------------------------------------
+# Read Config
+# ---------------------------------------------------------------------------
+cfg = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8")) or {}
+BASE_DATASET_DIR = Path(cfg.get("DIR_FOR_SAVE_DATA"))
+BASE_MODEL_DIR = Path(cfg.get("DIR_FOR_SAVE_MODELS"))
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -29,12 +37,6 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("backend_log")
-
-# ---------------------------------------------------------------------------
-# Base directories
-# ---------------------------------------------------------------------------
-BASE_DATASET_DIR = Path(__file__).resolve().parent / "datasets"
-BASE_MODEL_DIR = Path(__file__).resolve().parent / "models"
 
 
 # ---------------------------------------------------------------------------

@@ -11,13 +11,16 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from finetune_yolo_backend import YOLOTrainBackend
 
 # ---------------------------------------------------------------------------
 # Logging — share the same rotating file as the API so everything is
 # visible in one place (logs/api.log).
 # ---------------------------------------------------------------------------
-_LOG_DIR = Path(__file__).resolve().parent / "logs"
+cfg = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8")) or {}
+_LOG_DIR = Path(cfg.get("LOG_PATH"))
 _LOG_DIR.mkdir(exist_ok=True)
 _LOG_FILE = _LOG_DIR / "api.log"
 
