@@ -1,4 +1,5 @@
-DIR_FOR_SAVE_DATA: /home/ai-model/logo_detection/dataset
-DIR_FOR_SAVE_MODELS: /home/ai-model/logo_detection/model
-LOG_PATH: /home/ai-model/logo_detection/logs
-MODEL_NAME: test
+DIR_FOR_SAVE_DATA: /home/ai-model/logo-detection/dataset/from_roboflow
+DIR_FOR_SAVE_MODELS: /home/ai-model/logo-detection/model/Production_model
+LOG_PATH: /home/ai-model/logo-detection/logs
+MODEL_NAME: test1111
+API_PORT: 1234
