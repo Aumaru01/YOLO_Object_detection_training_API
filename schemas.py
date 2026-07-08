@@ -45,7 +45,7 @@ class TrainingConfig(BaseModel):
 
 
 class TrainRequest(BaseModel):
-    """Training request body — only roboflow + training config.
+    """Training request body for /train_roboflow_data — roboflow + training config.
     job_name is sent as a query parameter separately.
     """
     roboflow: RoboflowConfig
@@ -60,6 +60,36 @@ class TrainRequest(BaseModel):
                 "version": 1,
                 "dataset_format": "yolov8",
             },
+            "training": {
+                    "batch_size": 4,
+                    "cache": True,
+                    "copy_paste": 0.1,
+                    "epochs": 100,
+                    "img_size": 640,
+                    "lr0": 0.005,
+                    "mixup": 0.2,
+                    "model": "yolov8m.pt",
+                    "mosaic": 1,
+                    "optimizer": "AdamW",
+                    "patience": 60,
+                    "plots": True,
+                    "scale": 0.4,
+                    "device": "cuda",
+            },
+        }],
+    }}
+
+
+class LocalTrainRequest(BaseModel):
+    """Training request body for /train_local_data — training config only.
+    job_name and dataset_path are sent as query parameters; dataset_path
+    points at an already-preprocessed dataset (see POST /preprocess_data),
+    trained in place.
+    """
+    training: TrainingConfig = Field(default_factory=TrainingConfig)
+
+    model_config = {"json_schema_extra": {
+        "examples": [{
             "training": {
                     "batch_size": 4,
                     "cache": True,
@@ -120,3 +150,51 @@ class QueueInfo(BaseModel):
     finished: int
     failed: int
     jobs: list[JobDetail]
+
+
+# ---------------------------------------------------------------------------
+# Dataset preprocessing
+# ---------------------------------------------------------------------------
+class DatasetSplitInfo(BaseModel):
+    """Image/label counts for a single dataset split (train/val/test)."""
+    image_dir: str
+    label_dir: str
+    num_images: int
+    num_missing_labels: int
+    missing_labels_sample: list[str] = Field(default_factory=list)
+
+
+class DatasetSummary(BaseModel):
+    """Result of validating a YOLO-format dataset."""
+    data_yaml: str
+    root: str
+    num_classes: int
+    class_names: list[str]
+    splits: dict[str, DatasetSplitInfo]
+
+
+class PreprocessAddedInfo(BaseModel):
+    """What changed in this preprocess_data run."""
+    sources: list[str] = Field(default_factory=list)
+    train: int
+    val: int
+    test: int
+    new_classes: list[str] = Field(default_factory=list)
+    skipped_no_label: list[str] = Field(default_factory=list)
+
+
+class PreprocessResult(DatasetSummary):
+    """Dataset summary after a preprocess_data build/update, plus what was added."""
+    added: PreprocessAddedInfo
+
+
+# ---------------------------------------------------------------------------
+# Model export
+# ---------------------------------------------------------------------------
+class ExportResult(BaseModel):
+    """Result of exporting a trained model to ONNX + OpenVINO formats."""
+    model_path: str
+    onnx_path: str
+    openvino_dir: str
+    bin_path: Optional[str] = None
+    xml_path: Optional[str] = None

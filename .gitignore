@@ -1,7 +1,6 @@
-yolo-api.service
-yolo-worker.service
 *.pt
 __pycache__/
 # Runtime logs
 logs/
 *.log
+*venv
