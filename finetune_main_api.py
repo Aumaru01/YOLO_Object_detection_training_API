@@ -26,7 +26,6 @@ from schemas import (
     JobStatus,
     QueueInfo,
     PreprocessResult,
-    ExportResult,
 )
 from queue_worker import JobQueue, JobRecord
 from finetune_yolo_backend import (
@@ -34,7 +33,6 @@ from finetune_yolo_backend import (
     BASE_MODEL_DIR,
     preprocess_data,
     validate_dataset,
-    export_model,
     _reject_windows_path,
 )
 
@@ -329,24 +327,6 @@ def get_queue_info():
             counts[record.status] += 1
 
     return QueueInfo(jobs=[_job_to_detail(r) for r in records], **counts)
-
-
-# ---------------------------------------------------------------------------
-# Routes — Export
-# ---------------------------------------------------------------------------
-@app.post("/export_model", response_model=ExportResult)
-def export_model_endpoint(
-    model_path: str = Query(
-        ..., description="Filesystem path to a trained best.pt to export to ONNX and OpenVINO (.bin/.xml).",
-    ),
-):
-    """Export a trained model to ONNX and OpenVINO (.bin/.xml) formats."""
-    try:
-        return export_model(model_path)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------

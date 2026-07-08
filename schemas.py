@@ -186,15 +186,3 @@ class PreprocessAddedInfo(BaseModel):
 class PreprocessResult(DatasetSummary):
     """Dataset summary after a preprocess_data build/update, plus what was added."""
     added: PreprocessAddedInfo
-
-
-# ---------------------------------------------------------------------------
-# Model export
-# ---------------------------------------------------------------------------
-class ExportResult(BaseModel):
-    """Result of exporting a trained model to ONNX + OpenVINO formats."""
-    model_path: str
-    onnx_path: str
-    openvino_dir: str
-    bin_path: Optional[str] = None
-    xml_path: Optional[str] = None

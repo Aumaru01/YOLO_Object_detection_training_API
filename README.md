@@ -24,7 +24,6 @@ REST API for fine-tuning YOLOv8 models on logo detection datasets, backed by an 
                                      GET /queue                                                           models/{job_name}/
                                      DELETE /jobs/:id
                                      POST /preprocess_data ──▶ builds/updates a dataset at output_path from raw_path
-                                     POST /export_model ──▶ exports a trained best.pt to ONNX + OpenVINO (.bin/.xml)
 ```
 
 The API layer is separate from training execution. When a training request comes in, the API validates the payload, enqueues a job in memory, and immediately returns a `job_id` and `job_name`. A background dispatcher thread (started with the API — nothing extra to run) picks jobs off the queue one at a time and runs the pipeline in its own worker subprocess, so a running job can still be canceled by terminating it.
@@ -214,29 +213,6 @@ Response:
 
 `404` if `raw_path` doesn't exist or contains no recognizable source; `400` on validation errors (e.g. `val_ratio + test_ratio >= 1`, or a label referencing a class index with no matching name).
 
-### `POST /export_model` — Export a trained model to ONNX + OpenVINO
-
-Exports a trained `best.pt` (from `models/{job_name}/weights/best.pt`, or any `.pt` path) to ONNX and OpenVINO IR, written alongside `model_path`.
-
-```bash
-curl -X POST -G "http://localhost:1234/export_model" \
-  --data-urlencode "model_path=/data/models/my_logo_v1/weights/best.pt"
-```
-
-Response:
-
-```json
-{
-  "model_path": "/data/models/my_logo_v1/weights/best.pt",
-  "onnx_path": "/data/models/my_logo_v1/weights/best.onnx",
-  "openvino_dir": "/data/models/my_logo_v1/weights/best_openvino_model",
-  "bin_path": "/data/models/my_logo_v1/weights/best_openvino_model/best.bin",
-  "xml_path": "/data/models/my_logo_v1/weights/best_openvino_model/best.xml"
-}
-```
-
-`404` if `model_path` doesn't exist; `400` if it isn't a `.pt` file.
-
 ### `GET /health` — Health check
 
 ```bash
@@ -311,5 +287,3 @@ A `data.yaml` (searched for directly at the given path, then recursively in subd
 3. **Evaluate** — Runs validation against the `val` split, saving plots/results to `{output_path}/val/`, and returns `mAP50`/`mAP50_95`. If the dataset's `data.yaml` also defines a `test` split, a second pass runs against it, saving to `{output_path}/test/` and adding `test_mAP50`/`test_mAP50_95` to the result.
 
 `{output_path}` is whatever you passed as `output_path`, or `models/{job_name}/` if you didn't. Job results and status are kept in memory for the lifetime of the API process; trained models and evaluation results persist on disk under `{output_path}`. Datasets persist wherever they live — `datasets/{job_name}/` for Roboflow downloads, or whatever `dataset_path` was given for local jobs.
-
-Once training finishes, run `/export_model` against `{output_path}/train/weights/best.pt` to produce ONNX + OpenVINO artifacts for deployment.

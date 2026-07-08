@@ -186,36 +186,6 @@ def validate_dataset(dataset_path: str | Path) -> dict[str, Any]:
     }
 
 
-def export_model(model_path: str | Path) -> dict[str, Any]:
-    """Export a trained .pt model to ONNX and OpenVINO (.xml/.bin) formats,
-    written alongside model_path.
-    """
-    _reject_windows_path(model_path, "model_path")
-    model_path = Path(model_path)
-
-    if not model_path.exists():
-        raise FileNotFoundError(f"No model found at '{model_path}'.")
-    if model_path.suffix != ".pt":
-        raise ValueError(f"model_path '{model_path}' must be a '.pt' file, got '{model_path.suffix}'.")
-
-    # A fresh YOLO instance per export avoids state (e.g. layer fusion) from
-    # one export format leaking into the next.
-    onnx_path = Path(YOLO(str(model_path)).export(format="onnx"))
-    openvino_dir = Path(YOLO(str(model_path)).export(format="openvino"))
-    bin_path = next(openvino_dir.glob("*.bin"), None)
-    xml_path = next(openvino_dir.glob("*.xml"), None)
-
-    logger.info("Exported '%s' -> onnx='%s', bin='%s'", model_path, onnx_path, bin_path)
-
-    return {
-        "model_path": str(model_path),
-        "onnx_path": str(onnx_path),
-        "openvino_dir": str(openvino_dir),
-        "bin_path": str(bin_path) if bin_path else None,
-        "xml_path": str(xml_path) if xml_path else None,
-    }
-
-
 def _find_class_names(source_dir: Path) -> Optional[list[str]]:
     """Look for class names via data.yaml, classes.txt, or notes.json (each
     searched recursively, in that priority order). None if none found.
