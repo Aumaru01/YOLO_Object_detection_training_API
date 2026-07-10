@@ -473,10 +473,11 @@ class YOLOTrainBackend:
 
         # dataset_path/output_path override the default datasets/{job_name}/
         # and models/{job_name}/ conventions, letting a job read/write at
-        # arbitrary filesystem paths.
+        # arbitrary filesystem paths. output_path still gets a job_name
+        # subfolder, so multiple jobs sharing one output_path don't collide.
         self.job_name = job_name
         self.dataset_dir = Path(dataset_path) if dataset_path else (BASE_DATASET_DIR / job_name)
-        self.model_dir = Path(output_path) if output_path else (BASE_MODEL_DIR / job_name)
+        self.model_dir = Path(output_path, job_name) if output_path else (BASE_MODEL_DIR / job_name)
         self._data_yaml_cache: Optional[Path] = None
 
         # Only create model dir upfront — Roboflow skips download if

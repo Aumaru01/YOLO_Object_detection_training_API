@@ -212,8 +212,8 @@ def train_roboflow_data(
         None, description="Job name; auto-generated from a timestamp if omitted.", pattern=NAME_PATTERN,
     ),
     output_path: Optional[str] = Query(
-        None, description="Filesystem path to store the trained model + evaluation results; "
-                          "defaults to models/{job_name}/.",
+        None, description="Filesystem path under which a {job_name}/ folder is created to store "
+                          "the trained model + evaluation results; defaults to models/{job_name}/.",
     ),
 ):
     """Submit a training job that downloads its dataset from Roboflow."""
@@ -224,7 +224,7 @@ def train_roboflow_data(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
-    model_output_dir = Path(output_path) if output_path else (BASE_MODEL_DIR / job_name)
+    model_output_dir = Path(output_path, job_name) if output_path else (BASE_MODEL_DIR / job_name)
     if (BASE_DATASET_DIR / job_name).exists() or model_output_dir.exists():
         raise HTTPException(
             status_code=409,
@@ -249,8 +249,8 @@ def train_local_data(
         ..., description="Filesystem path to an already-preprocessed dataset, trained in place (see README).",
     ),
     output_path: Optional[str] = Query(
-        None, description="Filesystem path to store the trained model + evaluation results; "
-                          "defaults to models/{job_name}/.",
+        None, description="Filesystem path under which a {job_name}/ folder is created to store "
+                          "the trained model + evaluation results; defaults to models/{job_name}/.",
     ),
 ):
     """Submit a training job that trains on an already-local dataset (no download)."""

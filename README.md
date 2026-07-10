@@ -30,7 +30,7 @@ The API layer is separate from training execution. When a training request comes
 
 - `/train_roboflow_data` downloads the dataset into `datasets/{job_name}/` first.
 - `/train_local_data` trains **in place** on an already-preprocessed dataset at any filesystem path — nothing is copied.
-- Model weights and evaluation results go to `models/{job_name}/` by default, or to `output_path` if given.
+- Model weights and evaluation results go to `models/{job_name}/` by default, or to `{output_path}/{job_name}/` if `output_path` is given — so multiple jobs can share one `output_path` without colliding.
 
 > **Note:** job state lives in memory for the lifetime of the API process — restarting the API clears the job list. Datasets and models already written to disk are unaffected.
 
@@ -93,7 +93,7 @@ curl -X POST "http://localhost:1234/train_roboflow_data?job_name=my_logo_v1" \
   }'
 ```
 
-Only `roboflow.api_key` is required. If `job_name` is omitted, a timestamp-based name is generated automatically (e.g. `job_20260421_143000`). Pass `output_path` (query param) to store the trained model + evaluation results somewhere other than `models/{job_name}/`.
+Only `roboflow.api_key` is required. If `job_name` is omitted, a timestamp-based name is generated automatically (e.g. `job_20260421_143000`). Pass `output_path` (query param) to store the trained model + evaluation results under `{output_path}/{job_name}/` instead of `models/{job_name}/`.
 
 Response (`202 Accepted`):
 
@@ -125,7 +125,7 @@ curl -X POST "http://localhost:1234/train_local_data?job_name=my_logo_v1&dataset
   }'
 ```
 
-`dataset_path` points at the preprocessed dataset to train on. `output_path` is optional — where to store the trained model + evaluation results; defaults to `models/{job_name}/` if omitted. The dataset is validated before the job is queued: `404` if `dataset_path` has no `data.yaml`, `400` if it (or `output_path`) is malformed, `409` if a trained model already exists at the resolved output location. Response shape is the same `202 Accepted` job response as above.
+`dataset_path` points at the preprocessed dataset to train on. `output_path` is optional — a `{job_name}/` subfolder under it stores the trained model + evaluation results, so `models/{job_name}/` is used if omitted. The dataset is validated before the job is queued: `404` if `dataset_path` has no `data.yaml`, `400` if it (or `output_path`) is malformed, `409` if a trained model already exists at the resolved output location. Response shape is the same `202 Accepted` job response as above.
 
 ### `GET /jobs/{job_id}` — Check job status
 
@@ -246,7 +246,7 @@ curl http://localhost:1234/health
 | | `device` | string | `cpu` | Device: `cpu`, `cuda`, `cuda:0`, `cuda:1` |
 | — | `job_name` | query param | auto-generated for `/train_roboflow_data`, required for `/train_local_data` | Model output folder name (used when `output_path` is omitted) |
 | — | `dataset_path` | query param | required for `/train_local_data` only | Filesystem path to a preprocessed dataset (see [Dataset Formats](#dataset-formats)) |
-| — | `output_path` | query param | optional for both training endpoints | Filesystem path to store the trained model + evaluation results; defaults to `models/{job_name}/` |
+| — | `output_path` | query param | optional for both training endpoints | Filesystem path under which a `{job_name}/` folder stores the trained model + evaluation results; defaults to `models/{job_name}/` |
 
 ## Dataset Formats
 
@@ -283,7 +283,7 @@ A `data.yaml` (searched for directly at the given path, then recursively in subd
 `/train_roboflow_data` jobs execute three steps in sequence; `/train_local_data` jobs skip the download step:
 
 1. **Download** (roboflow only) — Fetches the dataset from Roboflow into `datasets/{job_name}/`.
-2. **Train** — Fine-tunes the YOLOv8 model. Weights are saved to `{output_path}/train/weights/` (`best.pt`, `last.pt`).
-3. **Evaluate** — Runs validation against the `val` split, saving plots/results to `{output_path}/val/`, and returns `mAP50`/`mAP50_95`. If the dataset's `data.yaml` also defines a `test` split, a second pass runs against it, saving to `{output_path}/test/` and adding `test_mAP50`/`test_mAP50_95` to the result.
+2. **Train** — Fine-tunes the YOLOv8 model. Weights are saved to `{model_dir}/train/weights/` (`best.pt`, `last.pt`).
+3. **Evaluate** — Runs validation against the `val` split, saving plots/results to `{model_dir}/val/`, and returns `mAP50`/`mAP50_95`. If the dataset's `data.yaml` also defines a `test` split, a second pass runs against it, saving to `{model_dir}/test/` and adding `test_mAP50`/`test_mAP50_95` to the result.
 
-`{output_path}` is whatever you passed as `output_path`, or `models/{job_name}/` if you didn't. Job results and status are kept in memory for the lifetime of the API process; trained models and evaluation results persist on disk under `{output_path}`. Datasets persist wherever they live — `datasets/{job_name}/` for Roboflow downloads, or whatever `dataset_path` was given for local jobs.
+`{model_dir}` is `{output_path}/{job_name}/` if you passed `output_path`, or `models/{job_name}/` if you didn't — always scoped to the job, even when several jobs share one `output_path`. Job results and status are kept in memory for the lifetime of the API process; trained models and evaluation results persist on disk under `{model_dir}`. Datasets persist wherever they live — `datasets/{job_name}/` for Roboflow downloads, or whatever `dataset_path` was given for local jobs.
