@@ -8,6 +8,7 @@ REST API for fine-tuning YOLOv8 models on logo detection datasets, backed by an 
 - [Project Structure](#project-structure)
 - [Setup](#setup)
 - [Running](#running)
+- [Web UI](#web-ui)
 - [API Endpoints](#api-endpoints)
 - [Request Body Reference](#request-body-reference)
 - [Dataset Formats](#dataset-formats)
@@ -16,14 +17,14 @@ REST API for fine-tuning YOLOv8 models on logo detection datasets, backed by an 
 ## Architecture
 
 ```
-                     POST /train_roboflow_data ──┐
-                                                  ├─▶ FastAPI ──enqueue──▶ JobQueue ──▶ worker subprocess ──▶ YOLOTrainBackend
-                     POST /train_local_data ─────┘                                                                │
-                                           │                                                          [download] → train → evaluate
-                                     GET /jobs/:id                                                                 │
-                                     GET /queue                                                           models/{job_name}/
-                                     DELETE /jobs/:id
-                                     POST /preprocess_data ──▶ builds/updates a dataset at output_path from raw_path
+POST /train_roboflow_data ──┐
+                            ├─▶ FastAPI ──enqueue──▶ JobQueue ──▶ worker subprocess ──▶ YOLOTrainBackend
+POST /train_local_data ─────┘                                                                │
+                      │                                                          [download] → train → evaluate
+                GET /jobs/:id                                                                 │
+                GET /queue                                                           models/{job_name}/
+                DELETE /jobs/:id
+                POST /preprocess_data ──▶ builds/updates a dataset at output_path from raw_path
 ```
 
 The API layer is separate from training execution. When a training request comes in, the API validates the payload, enqueues a job in memory, and immediately returns a `job_id` and `job_name`. A background dispatcher thread (started with the API — nothing extra to run) picks jobs off the queue one at a time and runs the pipeline in its own worker subprocess, so a running job can still be canceled by terminating it.
@@ -32,16 +33,21 @@ The API layer is separate from training execution. When a training request comes
 - `/train_local_data` trains **in place** on an already-preprocessed dataset at any filesystem path — nothing is copied.
 - Model weights and evaluation results go to `models/{job_name}/` by default, or to `{output_path}/{job_name}/` if `output_path` is given — so multiple jobs can share one `output_path` without colliding.
 
-> **Note:** job state lives in memory for the lifetime of the API process — restarting the API clears the job list. Datasets and models already written to disk are unaffected.
+> **Note:** the queue itself lives in memory — restarting the API drops queued jobs and stops a running one (they are listed as failed afterwards). Finished job records are persisted under `logs/jobs/` and reloaded on start. Datasets and models already written to disk are unaffected.
 
 ## Project Structure
 
 ```
-├── finetune_main_api.py        # FastAPI application — routes and queue setup
-├── schemas.py                  # Pydantic models — request/response validation
-├── queue_worker.py             # In-process JobQueue — dispatches jobs to worker subprocesses
-├── finetune_yolo_backend.py    # Core training backend — YOLO + Roboflow logic + dataset preprocessing
-└── requirements.txt            # Python dependencies
+├── api_main.py             # Entry point — FastAPI app, training/job routes, serves the UI   (python -m api_main)
+├── api_schemas.py          # Pydantic request/response models
+├── api_ui_routes.py        # JSON endpoints for the web UI (datasets, preview, Label Studio, settings, system)
+├── train_queue.py          # In-process job queue — runs each job in a worker subprocess, per-job logs
+├── train_backend.py        # YOLO training/evaluation, Roboflow download, preprocess (split), progress reporting
+├── data_manager.py         # Dataset discovery, class mapping, rename, import, re-index, preview
+├── data_label_studio.py    # YOLO -> Label Studio tasks / labeling config, export zip, direct push
+├── static/                 # Web UI (plain HTML/CSS/JS, no build step) served at /ui
+├── run.sh                  # Start the API
+└── requirements.txt        # Python dependencies
 ```
 
 Output directories (created automatically):
@@ -64,13 +70,60 @@ pip install -r requirements.txt
 ## Running
 
 ```bash
-python -m finetune_main_api
+python -m api_main
 
 # Tail the rotating log file (API + worker share it):
 tail -f logs/api.log
 ```
 
 The job queue and its worker start automatically with the API — there's no separate worker process or service to install or run. Interactive API docs are available at `http://localhost:1234/docs` once the API is running.
+
+## Web UI
+
+Open **`http://<host>:1234/`** (redirects to `/ui/`). Nothing extra to install or build — it's served by the same API process.
+
+**Dataset root** (top-right picker): the folder the UI works in — the project's `datasets/` by default. Choose *Add / manage folders…* to add another, e.g. `/home/ai-model/logo-detection/dataset/___main___sonar_data`. The list and the current choice are saved in `ui_settings.json`.
+
+| Tab | What it does |
+|---|---|
+| **Datasets** | Lists every YOLO dataset found under `datasets/` (any depth). *Prepared* = has a `data.yaml` with splits (trainable); *Source* = flat `images/` + `labels/` export (e.g. Label Studio YOLO export). Shows the **class index → data name** table with box/image counts per class. **Rename** a dataset folder (symlinks and `.preprocess_state.json` entries in other datasets that point at it are updated) or **edit class names** (indices — and so label files — stay unchanged). **Import** a zip upload or a folder already on the server. |
+| **Preview** | Browse images per dataset and folder (split) with boxes drawn and class names on each box. Filter by class, file name, or unlabeled/empty images; click for a full-size view (← → to browse, B toggles boxes). |
+| **Label Studio** | Export a dataset as Label Studio tasks with the existing boxes pre-filled (as annotations or predictions) plus a matching labeling config — download as a zip, or send straight to a Label Studio instance (creates the project and imports the tasks). Images are referenced by URL on this API, or via Label Studio local-file serving. |
+| **Train** | The `1.labeled → 2.re_index_label → 3.preprocessed → train` pipeline: **(1) Re-index** — merge Label Studio exports into one folder with a single `classes.txt` (like `merge_relabel.py`, but existing class indices are kept, new names appended, and images already merged are skipped). **(2) Split** — add the re-indexed images to a prepared dataset (`POST /preprocess_data` logic: only images not split before are added). **(3) Train** — queue a job (`POST /train_local_data`). Starting weights can be a pretrained checkpoint or a previous run's `best.pt`. |
+| **Monitor** | Job list plus, per job: stage, epoch/batch progress bars, ETA, live loss and mAP charts (with an epoch table), the worker's live stdout/stderr, process PID/exit code, final metrics or the error traceback, and GPU/RAM/disk usage. Cancel queued or running jobs. |
+
+Typical retraining loop: export *YOLO* from Label Studio → **Datasets → Import** into `1.labeled` → **Train → Re-index** into `2.re_index_label` → **Split** into `3.preprocessed` → **Train** → **Monitor**.
+
+> Split records each image by absolute path (`.preprocess_state.json`). If the prepared dataset was split from a different copy of the same folder (e.g. the share vs a local copy), the UI detects it and offers to **repoint** the records first (a backup is kept) instead of adding duplicates. Images with `.jpg/.jpeg/.png/.bmp/.webp` extensions are included.
+
+Per-job files live in `logs/jobs/{job_id}/`: `train.log` (worker output), `progress.json` (live progress), `job.json` (job record — so the job list survives an API restart; jobs that were running when the API stopped are shown as failed). Thumbnails are cached in `.cache/thumbs/`.
+
+> The UI has no authentication — like the rest of the API, expose it only on a trusted network. Label Studio's API token is sent to this server only for the one push request and is not stored.
+
+### UI endpoints
+
+Dataset ids are paths relative to `datasets/` (e.g. `1.labeled/pea_all`).
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /datasets` | All discovered datasets + group folders |
+| `GET /datasets/info?id=` | Summary + class table with per-class counts |
+| `POST /datasets/rename` `{id, new_name}` | Rename a dataset folder |
+| `PUT /datasets/classes` `{id, names}` | Rename classes (same count/order) |
+| `POST /datasets/repair-yaml` `{id}` | Point `data.yaml` `path` at the dataset's current folder |
+| `POST /datasets/import/upload?name=&group=` | Import a zip (raw request body) |
+| `POST /datasets/import/folder` `{source_path, name, group, mode}` | Import a server folder (`copy` or `symlink`) |
+| `GET /settings`, `PUT /settings/root` `{path}`, `DELETE /settings/root?path=` | Dataset root: current / switch (adds it) / forget |
+| `POST /datasets/reindex` `{sources, output_id \| output_name, output_group}` | Re-index labeled folders into one flat folder |
+| `POST /datasets/preprocess` `{sources, output_id \| output_name, output_group, val_ratio, test_ratio}` | Split into a prepared dataset (409 `stale_state` if records point at another copy) |
+| `POST /datasets/repoint-state` `{target_id, source_id}` | Repoint a prepared dataset's split records to this source's images |
+| `GET /datasets/images?id=&folder=&offset=&limit=&class_id=&q=&unlabeled=` | Page of images with parsed boxes |
+| `GET /datasets/file?ds=&folder=&path=&thumb=` | Image or thumbnail |
+| `POST /datasets/labelstudio/export` | Label Studio import zip |
+| `POST /datasets/labelstudio/push` | Create a Label Studio project and import tasks |
+| `GET /jobs/{job_id}/monitor` | Job status + process info + live training progress |
+| `GET /jobs/{job_id}/logs?offset=&max_bytes=` | Incremental worker log (tail with `next_offset`) |
+| `GET /models/available`, `GET /system/status` | Weights to start from; GPU/RAM/disk snapshot |
 
 ## API Endpoints
 

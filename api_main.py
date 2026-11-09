@@ -4,9 +4,10 @@ YOLOv8 Training API
 FastAPI application with an in-process job queue for managing training jobs.
 See README.md for the full endpoint reference and dataset format docs.
 
-Start API:    python -m finetune_main_api
+Start API:    python -m api_main
 """
 
+import json
 import logging
 import time
 import uvicorn
@@ -17,8 +18,10 @@ from typing import Optional
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
-from schemas import (
+from api_schemas import (
     TrainRequest,
     LocalTrainRequest,
     JobResponse,
@@ -27,8 +30,9 @@ from schemas import (
     QueueInfo,
     PreprocessResult,
 )
-from queue_worker import JobQueue, JobRecord
-from finetune_yolo_backend import (
+from train_queue import JobQueue, JobRecord, job_log_file, job_progress_file
+from api_ui_routes import build_router
+from train_backend import (
     BASE_DATASET_DIR,
     BASE_MODEL_DIR,
     preprocess_data,
@@ -87,6 +91,16 @@ app = FastAPI(
 )
 
 job_queue = JobQueue()
+
+
+def _busy_dataset_paths() -> list[str]:
+    return [
+        r.dataset_path for r in job_queue.all_jobs()
+        if r.status in ("queued", "started") and r.dataset_path
+    ]
+
+
+app.include_router(build_router(_busy_dataset_paths))
 
 
 @app.middleware("http")
@@ -317,6 +331,66 @@ def cancel_job(job_id: str):
     )
 
 
+@app.get("/jobs/{job_id}/monitor")
+def get_job_monitor(job_id: str):
+    """Everything the UI's training monitor needs for one job: status, process
+    info, live training progress (epoch, batch, losses, metric history), and
+    the current size of its log (fetch text via GET /jobs/{job_id}/logs)."""
+    record = _fetch_job(job_id)
+    detail = _job_to_detail(record).model_dump(mode="json")
+
+    progress = None
+    progress_path = job_progress_file(job_id)
+    if progress_path.exists():
+        try:
+            progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            progress = None  # mid-write; the next poll picks it up
+
+    process = record.process
+    log_path = job_log_file(job_id)
+    detail.update(
+        source="roboflow" if record.roboflow else "local",
+        training=record.training,
+        dataset_path=record.dataset_path,
+        output_path=record.output_path,
+        position=job_queue.position(job_id),
+        process={
+            "pid": record.pid,
+            "alive": bool(process is not None and process.is_alive()),
+            "exitcode": record.exitcode,
+        },
+        progress=progress,
+        log_size=log_path.stat().st_size if log_path.exists() else 0,
+    )
+    return detail
+
+
+@app.get("/jobs/{job_id}/logs")
+def get_job_logs(
+    job_id: str,
+    offset: int = Query(-1, description="Byte offset to read from; -1 = the last max_bytes of the log."),
+    max_bytes: int = Query(256_000, ge=1, le=5_000_000),
+):
+    """Incrementally read a job's worker output (stdout/stderr). Poll with the
+    returned next_offset to tail it."""
+    _fetch_job(job_id)
+    path = job_log_file(job_id)
+    if not path.exists():
+        return {"offset": 0, "next_offset": 0, "size": 0, "text": ""}
+    size = path.stat().st_size
+    start = max(0, size - max_bytes) if offset < 0 else min(offset, size)
+    with open(path, "rb") as f:
+        f.seek(start)
+        data = f.read(max_bytes)
+    return {
+        "offset": start,
+        "next_offset": start + len(data),
+        "size": size,
+        "text": data.decode("utf-8", errors="replace"),
+    }
+
+
 @app.get("/queue", response_model=QueueInfo)
 def get_queue_info():
     """Get current queue status and all jobs."""
@@ -336,6 +410,18 @@ def get_queue_info():
 def health_check():
     """Health check — reports the in-process job queue status."""
     return {"status": "healthy", "worker": "running", "queue_size": job_queue.pending_count()}
+
+
+# ---------------------------------------------------------------------------
+# Web UI (static single-page app)
+# ---------------------------------------------------------------------------
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+app.mount("/ui", StaticFiles(directory=STATIC_DIR, html=True), name="ui")
+
+
+@app.get("/", include_in_schema=False)
+def root():
+    return RedirectResponse(url="/ui/")
 
 
 # ---------------------------------------------------------------------------

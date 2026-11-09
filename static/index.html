@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YOLO Retraining Console</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span>YOLO Retraining Console</span>
+  </div>
+  <nav class="tabs" role="tablist">
+    <a href="#datasets" data-tab="datasets" role="tab">Datasets</a>
+    <a href="#preview" data-tab="preview" role="tab">Preview</a>
+    <a href="#labelstudio" data-tab="labelstudio" role="tab">Label Studio</a>
+    <a href="#train" data-tab="train" role="tab">Train</a>
+    <a href="#monitor" data-tab="monitor" role="tab">Monitor <span id="queue-badge" class="badge-count" hidden></span></a>
+  </nav>
+  <label class="root-picker" title="Folder the UI works in">
+    <span class="muted small">Dataset root</span>
+    <select id="root-select" aria-label="Dataset root"></select>
+  </label>
+  <a class="topbar-link" href="/docs" target="_blank" rel="noopener">API docs</a>
+</header>
+
+<main>
+  <!-- ================= DATASETS ================= -->
+  <section id="tab-datasets" class="tab-panel" hidden>
+    <div class="split">
+      <aside class="sidebar">
+        <div class="sidebar-tools">
+          <input id="ds-filter" type="search" placeholder="Filter datasets…" aria-label="Filter datasets">
+          <button id="ds-refresh" class="btn icon" title="Rescan datasets/ folder" aria-label="Refresh">⟳</button>
+        </div>
+        <button id="ds-import-open" class="btn primary block">+ Import dataset</button>
+        <div id="ds-list" class="ds-list"></div>
+        <p class="muted small" id="ds-base"></p>
+      </aside>
+      <div class="content" id="ds-detail">
+        <div class="empty">Select a dataset on the left, or import one.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= PREVIEW ================= -->
+  <section id="tab-preview" class="tab-panel" hidden>
+    <div class="toolbar">
+      <label>Dataset <select id="pv-dataset"></select></label>
+      <label>Folder <select id="pv-folder"></select></label>
+      <label>Class <select id="pv-class"><option value="">All classes</option></select></label>
+      <label class="grow">Search <input id="pv-search" type="search" placeholder="file name…"></label>
+      <label class="check"><input id="pv-unlabeled" type="checkbox"> Unlabeled / empty only</label>
+      <label class="check"><input id="pv-boxes" type="checkbox" checked> Show boxes</label>
+    </div>
+    <div class="pager" id="pv-pager-top"></div>
+    <div id="pv-grid" class="thumb-grid"></div>
+    <div class="pager" id="pv-pager"></div>
+  </section>
+
+  <!-- ================= LABEL STUDIO ================= -->
+  <section id="tab-labelstudio" class="tab-panel" hidden>
+    <div class="cols">
+      <div class="card">
+        <h2>1 · What to export</h2>
+        <label class="field">Dataset <select id="ls-dataset"></select></label>
+        <div class="field"><span class="field-label">Folders</span><div id="ls-folders" class="checks"></div></div>
+        <fieldset class="field">
+          <legend class="field-label">How Label Studio loads the images</legend>
+          <label class="radio"><input type="radio" name="ls-mode" value="url" checked>
+            <span><b>From this server by URL</b><br><span class="muted small">Easiest. The browser running Label Studio must reach this API.</span></span></label>
+          <div class="indent" data-mode="url">
+            <label class="field">This API's address, as seen from Label Studio users
+              <input id="ls-base" type="text" placeholder="http://server:1234"></label>
+          </div>
+          <label class="radio"><input type="radio" name="ls-mode" value="local_files">
+            <span><b>Label Studio local files</b><br><span class="muted small">Label Studio runs where these files are visible (LOCAL_FILES_SERVING_ENABLED=true).</span></span></label>
+          <div class="indent" data-mode="local_files" hidden>
+            <label class="field">LOCAL_FILES_DOCUMENT_ROOT <input id="ls-docroot" type="text"></label>
+            <label class="field">Local Files storage path (optional, for direct send)
+              <input id="ls-storage" type="text" placeholder="defaults to the dataset folder"></label>
+          </div>
+        </fieldset>
+        <fieldset class="field">
+          <legend class="field-label">Existing labels become</legend>
+          <label class="radio inline"><input type="radio" name="ls-as" value="annotations" checked> Annotations</label>
+          <label class="radio inline"><input type="radio" name="ls-as" value="predictions"> Predictions (pre-labels to review)</label>
+        </fieldset>
+        <label class="check"><input id="ls-unlabeled" type="checkbox" checked> Include images without labels</label>
+      </div>
+
+      <div class="stack">
+        <div class="card">
+          <h2>2a · Download an import package</h2>
+          <p class="muted">A zip with <code>tasks.json</code> (images + boxes), <code>label_config.xml</code> (labeling interface for these classes) and import instructions.</p>
+          <button id="ls-download" class="btn primary">Download Label Studio export</button>
+          <div id="ls-download-status" class="status-line"></div>
+        </div>
+        <div class="card">
+          <h2>2b · Or send it straight to Label Studio</h2>
+          <p class="muted">Creates a project with the right labeling interface and imports every task.</p>
+          <label class="field">Label Studio URL <input id="ls-url" type="text" placeholder="http://labelstudio:8080"></label>
+          <label class="field">API token <span class="muted small">(Account &amp; Settings → Access Token; not stored)</span>
+            <input id="ls-token" type="password" autocomplete="off"></label>
+          <label class="field">Project title <input id="ls-title" type="text" maxlength="50"></label>
+          <button id="ls-push" class="btn primary">Create project &amp; import</button>
+          <div id="ls-push-status" class="status-line"></div>
+        </div>
+        <div class="card subtle">
+          <h2>Round trip</h2>
+          <ol class="steps">
+            <li>Export here, then review / fix boxes in Label Studio.</li>
+            <li>In Label Studio: <b>Export → YOLO</b> (zip).</li>
+            <li>Back here: <b>Datasets → Import dataset</b> with that zip.</li>
+            <li><b>Train → Prepare dataset</b> to merge it in, then start training.</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= TRAIN ================= -->
+  <section id="tab-train" class="tab-panel" hidden>
+    <div class="cols">
+      <div class="stack">
+      <div class="card">
+        <h2>1 · Re-index labeled folders</h2>
+        <p class="muted">Merge Label Studio exports (e.g. <code>1.labeled/*</code>) into one folder with a single <code>classes.txt</code> (e.g. <code>2.re_index_label</code>). Class ids are remapped by name; existing indices are kept and new class names are appended. Images already merged are skipped.</p>
+        <div class="field">
+          <span class="field-label">Labeled folders to merge <span id="ri-count" class="muted small"></span></span>
+          <input id="ri-filter" type="search" placeholder="Filter…">
+          <div id="ri-sources" class="check-list"></div>
+        </div>
+        <fieldset class="field">
+          <legend class="field-label">Into</legend>
+          <label class="radio inline"><input type="radio" name="ri-target" value="existing" checked> Existing re-index folder</label>
+          <label class="radio inline"><input type="radio" name="ri-target" value="new"> A new folder</label>
+          <div data-ri-target="existing">
+            <select id="ri-existing"></select>
+          </div>
+          <div class="row" data-ri-target="new" hidden>
+            <label class="field">Group folder <input id="ri-group" list="group-options" type="text" value=""></label>
+            <label class="field">Name <input id="ri-name" type="text" placeholder="e.g. 2.re_index_label"></label>
+          </div>
+        </fieldset>
+        <button id="ri-run" class="btn">Merge &amp; re-index</button>
+        <div id="ri-status" class="status-line"></div>
+      </div>
+
+      <div class="card">
+        <h2>2 · Split into train / val / test</h2>
+        <p class="muted">Adds images from the re-indexed folder to a prepared dataset (e.g. <code>3.preprocessed</code>). Only images not split before are added; existing train/val/test assignments stay as they are.</p>
+        <label class="field">Re-indexed folder <select id="sp-source"></select></label>
+        <fieldset class="field">
+          <legend class="field-label">Into</legend>
+          <label class="radio inline"><input type="radio" name="sp-target" value="existing" checked> Existing prepared dataset</label>
+          <label class="radio inline"><input type="radio" name="sp-target" value="new"> A new dataset</label>
+          <div data-sp-target="existing">
+            <select id="sp-existing"></select>
+          </div>
+          <div class="row" data-sp-target="new" hidden>
+            <label class="field">Group folder <input id="sp-group" list="group-options" type="text" value=""></label>
+            <label class="field">Name <input id="sp-name" type="text" placeholder="e.g. 3.preprocessed_v2"></label>
+          </div>
+        </fieldset>
+        <div class="row">
+          <label class="field">Val ratio <input id="sp-val" type="number" min="0" max="0.9" step="0.05" value="0.1"></label>
+          <label class="field">Test ratio <input id="sp-test" type="number" min="0" max="0.9" step="0.05" value="0"></label>
+        </div>
+        <p class="muted small">Ratios apply to the newly added images only.</p>
+        <button id="sp-run" class="btn">Split</button>
+        <div id="sp-status" class="status-line"></div>
+      </div>
+      </div>
+
+      <div class="card">
+        <h2>3 · Start training</h2>
+        <label class="field">Training dataset <select id="tr-dataset"></select></label>
+        <div id="tr-dataset-info" class="muted small"></div>
+        <div class="row">
+          <label class="field">Job name <input id="tr-job" type="text" pattern="[A-Za-z0-9_\-]+"></label>
+          <label class="field">Device <select id="tr-device"></select></label>
+        </div>
+        <label class="field">Starting weights
+          <input id="tr-model" type="text" list="model-options" value="yolov8m.pt">
+          <span class="muted small">Pick a pretrained checkpoint, or a previous run's best.pt to continue improving it.</span>
+        </label>
+        <div class="row">
+          <label class="field">Epochs <input id="tr-epochs" type="number" min="1" value="100"></label>
+          <label class="field">Image size <input id="tr-imgsz" type="number" min="32" step="32" value="640"></label>
+          <label class="field">Batch <input id="tr-batch" type="number" min="1" value="4"></label>
+          <label class="field">Patience <input id="tr-patience" type="number" min="1" value="60"></label>
+        </div>
+        <details class="advanced">
+          <summary>Advanced hyperparameters</summary>
+          <div class="row">
+            <label class="field">Optimizer <select id="tr-optimizer">
+              <option>AdamW</option><option>auto</option><option>SGD</option><option>Adam</option><option>NAdam</option><option>RAdam</option><option>RMSProp</option>
+            </select></label>
+            <label class="field">lr0 <input id="tr-lr0" type="number" step="0.0005" min="0.00001" value="0.005"></label>
+            <label class="field">Scale <input id="tr-scale" type="number" step="0.05" min="0" value="0.4"></label>
+          </div>
+          <div class="row">
+            <label class="field">Mosaic <input id="tr-mosaic" type="number" step="0.1" min="0" max="1" value="1"></label>
+            <label class="field">Mixup <input id="tr-mixup" type="number" step="0.05" min="0" max="1" value="0.2"></label>
+            <label class="field">Copy-paste <input id="tr-copypaste" type="number" step="0.05" min="0" max="1" value="0.1"></label>
+          </div>
+          <div class="row">
+            <label class="check"><input id="tr-plots" type="checkbox" checked> Save plots</label>
+            <label class="check"><input id="tr-cache" type="checkbox" checked> Cache images in RAM</label>
+          </div>
+          <label class="field">Output folder <span class="muted small">(optional; default models/&lt;job&gt;/)</span>
+            <input id="tr-output" type="text" placeholder="/path/to/models"></label>
+        </details>
+        <button id="tr-submit" class="btn primary">Queue training job</button>
+        <div id="tr-status" class="status-line"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= MONITOR ================= -->
+  <section id="tab-monitor" class="tab-panel" hidden>
+    <div class="split">
+      <aside class="sidebar">
+        <div class="sidebar-head"><b>Jobs</b><span id="queue-summary" class="muted small"></span></div>
+        <div id="job-list" class="job-list"></div>
+        <div id="sys-status" class="sys-status"></div>
+      </aside>
+      <div class="content" id="job-detail">
+        <div class="empty">No job selected. Start one from the Train tab.</div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<datalist id="group-options"></datalist>
+<datalist id="model-options"></datalist>
+
+<!-- Import dialog -->
+<dialog id="import-dialog" class="dialog">
+  <form method="dialog" id="import-form">
+    <h2>Import a YOLO dataset</h2>
+    <div class="seg" role="tablist">
+      <button type="button" class="seg-btn active" data-src="zip">Upload zip</button>
+      <button type="button" class="seg-btn" data-src="folder">Folder on server</button>
+    </div>
+    <div data-src-panel="zip">
+      <label class="field">Zip file <input id="imp-file" type="file" accept=".zip,application/zip"></label>
+      <p class="muted small">Label Studio "YOLO" export, Roboflow YOLO export, or any zip with <code>data.yaml</code> or <code>images/</code> + <code>labels/</code> + <code>classes.txt</code>.</p>
+    </div>
+    <div data-src-panel="folder" hidden>
+      <label class="field">Server path <input id="imp-path" type="text" placeholder="/mnt/share/my_export"></label>
+      <label class="radio inline"><input type="radio" name="imp-mode" value="copy" checked> Copy into datasets/</label>
+      <label class="radio inline"><input type="radio" name="imp-mode" value="symlink"> Link (no copy)</label>
+    </div>
+    <div class="row">
+      <label class="field">Group folder <input id="imp-group" type="text" list="group-options" value="1.labeled"></label>
+      <label class="field">Dataset name <input id="imp-name" type="text" required></label>
+    </div>
+    <progress id="imp-progress" max="100" value="0" hidden></progress>
+    <div id="imp-status" class="status-line"></div>
+    <div class="dialog-actions">
+      <button type="button" class="btn" id="imp-cancel">Cancel</button>
+      <button type="button" class="btn primary" id="imp-go">Import</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Dataset root dialog -->
+<dialog id="root-dialog" class="dialog">
+  <h2>Dataset roots</h2>
+  <p class="muted">The UI lists, previews, imports and prepares datasets inside the selected folder. Use a path on this server, e.g. a mounted share.</p>
+  <div id="root-list" class="root-list"></div>
+  <label class="field">Add a folder <input id="root-new" type="text" placeholder="/home/ai-model/logo-detection/dataset/___main___sonar_data"></label>
+  <div id="root-status" class="status-line"></div>
+  <div class="dialog-actions">
+    <button type="button" class="btn" id="root-close">Close</button>
+    <button type="button" class="btn primary" id="root-add">Add &amp; switch</button>
+  </div>
+</dialog>
+
+<!-- Image lightbox -->
+<dialog id="lightbox" class="lightbox">
+  <div class="lb-body">
+    <div class="lb-stage"><div class="lb-frame" id="lb-frame"></div></div>
+    <aside class="lb-side">
+      <div class="lb-head">
+        <span id="lb-pos" class="muted small"></span>
+        <button class="btn icon" id="lb-close" aria-label="Close">✕</button>
+      </div>
+      <div id="lb-name" class="lb-name"></div>
+      <div id="lb-boxes"></div>
+      <div class="lb-nav">
+        <button class="btn" id="lb-prev">← Prev</button>
+        <button class="btn" id="lb-next">Next →</button>
+      </div>
+      <p class="muted small">Keys: ← → to browse, B to toggle boxes, Esc to close.</p>
+    </aside>
+  </div>
+</dialog>
+
+<div id="toasts" class="toasts" aria-live="polite"></div>
+<script src="app.js"></script>
+</body>
+</html>

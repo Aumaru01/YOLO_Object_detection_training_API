@@ -11,6 +11,7 @@ import os
 import random
 import shutil
 import logging
+import time
 
 from pathlib import Path, PureWindowsPath
 from ultralytics import YOLO
@@ -36,7 +37,7 @@ logger = logging.getLogger("backend_log")
 BASE_DATASET_DIR = Path(__file__).resolve().parent / "datasets"
 BASE_MODEL_DIR = Path(__file__).resolve().parent / "models"
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +286,7 @@ def _save_processed_set(output_path: Path, processed: set[str]) -> None:
 
 
 def preprocess_data(
-    raw_path: str | Path,
+    raw_path: str | Path | list[str | Path],
     output_path: str | Path,
     val_ratio: float = 0.1,
     test_ratio: float = 0.0,
@@ -305,21 +306,30 @@ def preprocess_data(
     symlinked into output_path where possible (not copied), falling back to
     real copies if the output filesystem doesn't support symlinks (e.g. many
     CIFS/SMB mounts) — only their remapped labels are otherwise written
-    there. See README.md for details.
+    there. raw_path may also be a list of such paths, whose sources are
+    all merged into the one output. See README.md for details.
     """
     if val_ratio + test_ratio >= 1:
         raise ValueError(
             f"val_ratio ({val_ratio}) + test_ratio ({test_ratio}) must leave room "
             "for a non-empty train split (sum must be < 1)."
         )
-    _reject_windows_path(raw_path, "raw_path")
+    raw_paths = [Path(p) for p in (raw_path if isinstance(raw_path, (list, tuple)) else [raw_path])]
+    if not raw_paths:
+        raise ValueError("At least one raw_path is required.")
+    for p in raw_paths:
+        _reject_windows_path(p, "raw_path")
     _reject_windows_path(output_path, "output_path")
 
-    raw_path = Path(raw_path)
+    raw_path = raw_paths[0] if len(raw_paths) == 1 else ", ".join(str(p) for p in raw_paths)
     output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    sources = _discover_sources(raw_path, output_path)
+    sources: list[Path] = []
+    for p in raw_paths:
+        for src in _discover_sources(p, output_path):
+            if src not in sources:
+                sources.append(src)
     if not sources:
         raise FileNotFoundError(
             f"No YOLO-format source found under '{raw_path}' (expected images/ + "
@@ -442,6 +452,131 @@ def preprocess_data(
     return summary
 
 
+
+# ---------------------------------------------------------------------------
+# Training progress reporting (read by the UI's training monitor)
+# ---------------------------------------------------------------------------
+def _to_float(value: Any) -> Optional[float]:
+    try:
+        return round(float(value), 6)
+    except (TypeError, ValueError):
+        return None
+
+
+class ProgressReporter:
+    """Writes a small JSON snapshot of training progress to ``path``.
+
+    Hooked into ultralytics via trainer callbacks; the API process reads the
+    file to drive the UI's training monitor. Writes are atomic (tmp + rename)
+    and batch-level updates are throttled.
+    """
+
+    BATCH_WRITE_INTERVAL = 1.0  # seconds
+
+    def __init__(self, path: Optional[str | Path]) -> None:
+        self.path = Path(path) if path else None
+        self.state: dict[str, Any] = {
+            "stage": "starting", "stage_detail": "", "epoch": 0, "epochs": None,
+            "batch": 0, "batches": None, "losses": {}, "history": [],
+            "best_fitness": None, "save_dir": None, "train_started_at": None,
+            "eval": {}, "updated_at": time.time(),
+        }
+        self._last_write = 0.0
+        self._in_epoch = False
+        self.write(force=True)
+
+    def write(self, force: bool = False) -> None:
+        if self.path is None:
+            return
+        now = time.time()
+        if not force and now - self._last_write < self.BATCH_WRITE_INTERVAL:
+            return
+        self._last_write = now
+        self.state["updated_at"] = now
+        try:
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.state), encoding="utf-8")
+            os.replace(tmp, self.path)
+        except OSError as exc:  # never let monitoring break training
+            logger.debug("Progress write failed: %s", exc)
+
+    def stage(self, stage: str, detail: str = "", **extra: Any) -> None:
+        self.state.update(stage=stage, stage_detail=detail, **extra)
+        self.write(force=True)
+
+    # -- ultralytics callbacks ------------------------------------------
+    def attach(self, model: "YOLO") -> None:
+        model.add_callback("on_pretrain_routine_start", self._on_pretrain_start)
+        model.add_callback("on_train_start", self._on_train_start)
+        model.add_callback("on_train_epoch_start", self._on_epoch_start)
+        model.add_callback("on_train_batch_end", self._on_batch_end)
+        model.add_callback("on_train_epoch_end", self._on_epoch_end)
+        model.add_callback("on_fit_epoch_end", self._on_fit_epoch_end)
+        model.add_callback("on_train_end", self._on_train_end)
+
+    def _losses(self, trainer: Any) -> dict[str, float]:
+        if getattr(trainer, "tloss", None) is None:
+            return {}
+        try:
+            items = trainer.label_loss_items(trainer.tloss, prefix="train")
+        except Exception:
+            return {}
+        return {k: v for k, v in ((k, _to_float(v)) for k, v in items.items()) if v is not None}
+
+    def _on_pretrain_start(self, trainer: Any) -> None:
+        self.stage("preparing", "Building dataloaders and model")
+
+    def _on_train_start(self, trainer: Any) -> None:
+        try:
+            batches = len(trainer.train_loader)
+        except Exception:
+            batches = None
+        self.state.update(
+            epochs=trainer.epochs, batches=batches, save_dir=str(trainer.save_dir),
+            train_started_at=time.time(),
+        )
+        self.stage("training", "")
+
+    def _on_epoch_start(self, trainer: Any) -> None:
+        self._in_epoch = True
+        self.state.update(epoch=trainer.epoch + 1, batch=0, epoch_started_at=time.time())
+        self.stage("training", f"Epoch {trainer.epoch + 1}/{trainer.epochs}")
+
+    def _on_batch_end(self, trainer: Any) -> None:
+        self.state["batch"] += 1
+        self.state["losses"] = self._losses(trainer)
+        self.write()
+
+    def _on_epoch_end(self, trainer: Any) -> None:
+        self.state["losses"] = self._losses(trainer)
+        self.stage("validating", f"Validating epoch {trainer.epoch + 1}/{trainer.epochs}")
+
+    def _on_fit_epoch_end(self, trainer: Any) -> None:
+        # ultralytics also fires this after training, for its final validation
+        # of best.pt (logged at epoch+1) — keep that out of the per-epoch history.
+        final = not self._in_epoch
+        self._in_epoch = False
+        entry: dict[str, Any] = {"epoch": trainer.epoch + 1, "time": time.time()}
+        entry.update(self._losses(trainer))
+        for k, v in (trainer.metrics or {}).items():
+            fv = _to_float(v)
+            if fv is not None:
+                entry[k] = fv
+        for k, v in (getattr(trainer, "lr", None) or {}).items():
+            fv = _to_float(v)
+            if fv is not None:
+                entry[k] = fv
+        if final:
+            self.state["final_val"] = entry
+            self.write(force=True)
+            return
+        self.state["history"].append(entry)
+        self.state["best_fitness"] = _to_float(getattr(trainer, "best_fitness", None))
+        self.stage("training", f"Epoch {trainer.epoch + 1}/{trainer.epochs} done")
+
+    def _on_train_end(self, trainer: Any) -> None:
+        self.stage("trained", "Training finished — running final evaluation")
+
 # ---------------------------------------------------------------------------
 # Backend class
 # ---------------------------------------------------------------------------
@@ -459,7 +594,10 @@ class YOLOTrainBackend:
         dataset_format: Optional[str] = None,
         dataset_path: Optional[str | Path] = None,
         output_path: Optional[str | Path] = None,
+        progress_file: Optional[str | Path] = None,
     ) -> None:
+        self.progress = ProgressReporter(progress_file)
+
         # Roboflow — omitted when training on an already-local dataset.
         self.rf = Roboflow(api_key=api_key) if api_key else None
         self.workspace = workspace
@@ -560,6 +698,7 @@ class YOLOTrainBackend:
                 "credentials were provided to download one."
             )
 
+        self.progress.stage("downloading", f"{self.workspace}/{self.project_name} v{self.version}")
         logger.info(
             "Downloading: %s/%s v%d (%s) ...",
             self.workspace, self.project_name, self.version, self.dataset_format,
@@ -618,6 +757,8 @@ class YOLOTrainBackend:
             device, self.model_dir,
         )
 
+        self.progress.stage("loading", f"Loading model {self.model_name}")
+        self.progress.attach(self.model)
         self.model.train(**train_args)
         logger.info("Training complete.")
 
@@ -646,6 +787,7 @@ class YOLOTrainBackend:
         device = self._validate_device(train_params["device"])
 
         logger.info("Running evaluation ...")
+        self.progress.stage("evaluating", "Validation split")
         metrics = self.model.val(
             data=str(self.data_yaml_path),
             imgsz=train_params["img_size"],
@@ -665,6 +807,7 @@ class YOLOTrainBackend:
 
         if has_test_split:
             logger.info("Running test-set evaluation ...")
+            self.progress.stage("evaluating", "Test split")
             test_metrics = self.model.val(
                 data=str(self.data_yaml_path),
                 split="test",
@@ -681,6 +824,7 @@ class YOLOTrainBackend:
                 result["test_mAP50"], result["test_mAP50_95"],
             )
 
+        self.progress.state["eval"] = result
         return result
 
     # ------------------------------------------------------------------
@@ -696,6 +840,7 @@ class YOLOTrainBackend:
 
         result = {**train_result, **eval_result}
         logger.info("=== Pipeline complete [%s] === Result: %s", self.job_name, result)
+        self.progress.stage("finished", "Pipeline complete", result=result)
         return result
 
     def run_pipeline_local(self, train_params: dict[str, Any]) -> dict[str, Any]:
@@ -713,6 +858,7 @@ class YOLOTrainBackend:
 
         result = {**train_result, **eval_result}
         logger.info("=== Local pipeline complete [%s] === Result: %s", self.job_name, result)
+        self.progress.stage("finished", "Pipeline complete", result=result)
         return result
 
     # ------------------------------------------------------------------
