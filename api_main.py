@@ -32,6 +32,9 @@ from api_schemas import (
 )
 from train_queue import JobQueue, JobRecord, job_log_file, job_progress_file
 from api_ui_routes import build_router
+from api_model_test import build_router as build_test_router
+from api_model_export import build_router as build_export_router
+from data_manager import record_run
 from train_backend import (
     BASE_DATASET_DIR,
     BASE_MODEL_DIR,
@@ -101,6 +104,8 @@ def _busy_dataset_paths() -> list[str]:
 
 
 app.include_router(build_router(_busy_dataset_paths))
+app.include_router(build_test_router())
+app.include_router(build_export_router())
 
 
 @app.middleware("http")
@@ -174,11 +179,18 @@ def preprocess_dataset(
 ):
     """Build or incrementally update a YOLO dataset at output_path from raw_path."""
     try:
-        return preprocess_data(raw_path, output_path, val_ratio=val_ratio, test_ratio=test_ratio)
+        result = preprocess_data(raw_path, output_path, val_ratio=val_ratio, test_ratio=test_ratio)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    ratio = {"train": round(1 - val_ratio - test_ratio, 4), "val": val_ratio, "test": test_ratio}
+    added = result["added"]
+    record_run(output_path, "prepared", {
+        "action": "split (API)", "sources": [raw_path], "ratio": ratio,
+        "added": {k: added[k] for k in ("train", "val", "test")}, "new_classes": added["new_classes"],
+    }, split_ratio=ratio)
+    return result
 
 
 # ---------------------------------------------------------------------------

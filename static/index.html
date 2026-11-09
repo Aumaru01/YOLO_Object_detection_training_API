@@ -18,6 +18,8 @@
     <a href="#labelstudio" data-tab="labelstudio" role="tab">Label Studio</a>
     <a href="#train" data-tab="train" role="tab">Train</a>
     <a href="#monitor" data-tab="monitor" role="tab">Monitor <span id="queue-badge" class="badge-count" hidden></span></a>
+    <a href="#test" data-tab="test" role="tab">Test</a>
+    <a href="#export" data-tab="export" role="tab">Export ONNX</a>
   </nav>
   <label class="root-picker" title="Folder the UI works in">
     <span class="muted small">Dataset root</span>
@@ -33,7 +35,7 @@
       <aside class="sidebar">
         <div class="sidebar-tools">
           <input id="ds-filter" type="search" placeholder="Filter datasets…" aria-label="Filter datasets">
-          <button id="ds-refresh" class="btn icon" title="Rescan datasets/ folder" aria-label="Refresh">⟳</button>
+          <button id="ds-refresh" class="btn icon" title="Rescan the dataset root" aria-label="Refresh">⟳</button>
         </div>
         <button id="ds-import-open" class="btn primary block">+ Import dataset</button>
         <div id="ds-list" class="ds-list"></div>
@@ -139,6 +141,7 @@
           <label class="radio inline"><input type="radio" name="ri-target" value="new"> A new folder</label>
           <div data-ri-target="existing">
             <select id="ri-existing"></select>
+            <div id="ri-details" class="folder-details"></div>
           </div>
           <div class="row" data-ri-target="new" hidden>
             <label class="field">Group folder <input id="ri-group" list="group-options" type="text" value=""></label>
@@ -153,12 +156,14 @@
         <h2>2 · Split into train / val / test</h2>
         <p class="muted">Adds images from the re-indexed folder to a prepared dataset (e.g. <code>3.preprocessed</code>). Only images not split before are added; existing train/val/test assignments stay as they are.</p>
         <label class="field">Re-indexed folder <select id="sp-source"></select></label>
+        <div id="sp-source-details" class="folder-details"></div>
         <fieldset class="field">
           <legend class="field-label">Into</legend>
           <label class="radio inline"><input type="radio" name="sp-target" value="existing" checked> Existing prepared dataset</label>
           <label class="radio inline"><input type="radio" name="sp-target" value="new"> A new dataset</label>
           <div data-sp-target="existing">
             <select id="sp-existing"></select>
+            <div id="sp-details" class="folder-details"></div>
           </div>
           <div class="row" data-sp-target="new" hidden>
             <label class="field">Group folder <input id="sp-group" list="group-options" type="text" value=""></label>
@@ -169,7 +174,7 @@
           <label class="field">Val ratio <input id="sp-val" type="number" min="0" max="0.9" step="0.05" value="0.1"></label>
           <label class="field">Test ratio <input id="sp-test" type="number" min="0" max="0.9" step="0.05" value="0"></label>
         </div>
-        <p class="muted small">Ratios apply to the newly added images only.</p>
+        <p class="muted small" id="sp-ratio-note">Ratios apply to the newly added images only.</p>
         <button id="sp-run" class="btn">Split</button>
         <div id="sp-status" class="status-line"></div>
       </div>
@@ -233,10 +238,91 @@
       </div>
     </div>
   </section>
+  <!-- ================= TEST ================= -->
+  <section id="tab-test" class="tab-panel" hidden>
+    <div class="test-layout">
+      <div class="card">
+        <h2>1 · Model path</h2>
+        <label class="field">Weights file
+          <input id="ts-path" type="text" list="test-model-options" placeholder="models/&lt;job&gt;/train/weights/best.pt">
+          <span class="muted small">Absolute path on the server, or relative to the project folder. Suggestions list trained runs and local weights.</span>
+        </label>
+        <div class="row">
+          <label class="field">Device <select id="ts-device"></select></label>
+        </div>
+        <h2 style="margin-top:6px">2 · Load model</h2>
+        <div class="btn-row" style="margin-top:0">
+          <button id="ts-load" class="btn primary">Load model</button>
+          <button id="ts-unload" class="btn" hidden>Unload</button>
+        </div>
+        <div id="ts-model" class="status-line"></div>
+      </div>
+
+      <div class="card">
+        <h2>3 · Test images</h2>
+        <div class="row">
+          <label class="field">Confidence <span class="muted small" id="ts-conf-v">0.25</span>
+            <input id="ts-conf" type="range" min="0.01" max="0.95" step="0.01" value="0.25"></label>
+          <label class="field">IoU (NMS) <span class="muted small" id="ts-iou-v">0.70</span>
+            <input id="ts-iou" type="range" min="0.1" max="0.95" step="0.05" value="0.7"></label>
+          <label class="field">Image size <input id="ts-imgsz" type="number" min="32" step="32" placeholder="model default"></label>
+        </div>
+        <div id="ts-drop" class="dropzone" tabindex="0" aria-disabled="true">
+          <div class="dz-main">Load a model first</div>
+          <div class="muted small">Then drop images here, click to choose files, or paste (Ctrl+V)</div>
+          <input id="ts-file" type="file" accept="image/*" multiple hidden>
+        </div>
+        <div class="btn-row" id="ts-tools" hidden>
+          <button id="ts-rerun" class="btn small">Re-run all with current settings</button>
+          <button id="ts-clear" class="btn small">Clear results</button>
+        </div>
+        <div id="ts-results" class="ts-results"></div>
+      </div>
+    </div>
+  </section>
+  <section id="tab-export" class="tab-panel" hidden>
+    <div class="test-layout">
+      <div class="card">
+        <h2>1 · Weights to convert</h2>
+        <label class="field">PyTorch weights (.pt)
+          <input id="ex-path" type="text" list="export-model-options" placeholder="models/&lt;job&gt;/train/weights/best.pt">
+          <span class="muted small">Absolute path on the server, or relative to the project folder. The .onnx is written next to it (same name), replacing an older one.</span>
+        </label>
+        <div id="ex-info" class="status-line"></div>
+
+        <h2 style="margin-top:10px">2 · Options</h2>
+        <div class="row">
+          <label class="field">Image size <input id="ex-imgsz" type="number" min="32" step="32" placeholder="as trained"></label>
+          <label class="field">Batch <input id="ex-batch" type="number" min="1" max="64" value="1"></label>
+          <label class="field">Opset <input id="ex-opset" type="number" min="7" max="25" placeholder="auto"></label>
+        </div>
+        <label class="field">Device <select id="ex-device"></select></label>
+        <div class="checks">
+          <label class="check"><input id="ex-simplify" type="checkbox" checked> Simplify graph</label>
+          <label class="check"><input id="ex-dynamic" type="checkbox"> Dynamic batch / size</label>
+          <label class="check"><input id="ex-half" type="checkbox"> FP16 (GPU only)</label>
+          <label class="check"><input id="ex-openvino" type="checkbox"> Also OpenVINO (.xml/.bin)</label>
+        </div>
+
+        <h2 style="margin-top:10px">3 · Convert</h2>
+        <div class="btn-row" style="margin-top:0">
+          <button id="ex-go" class="btn primary">Convert to ONNX</button>
+        </div>
+        <div id="ex-status" class="status-line"></div>
+      </div>
+
+      <div class="card">
+        <h2>Result</h2>
+        <div id="ex-result"><p class="muted">Choose a .pt file and click <b>Convert to ONNX</b>. The exported file is checked with onnxruntime (input/output shapes, class names, a test inference).</p></div>
+      </div>
+    </div>
+  </section>
 </main>
 
 <datalist id="group-options"></datalist>
 <datalist id="model-options"></datalist>
+<datalist id="test-model-options"></datalist>
+<datalist id="export-model-options"></datalist>
 
 <!-- Import dialog -->
 <dialog id="import-dialog" class="dialog">
@@ -252,7 +338,7 @@
     </div>
     <div data-src-panel="folder" hidden>
       <label class="field">Server path <input id="imp-path" type="text" placeholder="/mnt/share/my_export"></label>
-      <label class="radio inline"><input type="radio" name="imp-mode" value="copy" checked> Copy into datasets/</label>
+      <label class="radio inline"><input type="radio" name="imp-mode" value="copy" checked> Copy into the dataset root</label>
       <label class="radio inline"><input type="radio" name="imp-mode" value="symlink"> Link (no copy)</label>
     </div>
     <div class="row">

@@ -100,7 +100,7 @@ function go(tab, params = {}) {
 
 function route() {
   const { tab, params } = parseHash();
-  const name = ["datasets", "preview", "labelstudio", "train", "monitor"].includes(tab) ? tab : "datasets";
+  const name = ["datasets", "preview", "labelstudio", "train", "monitor", "test", "export"].includes(tab) ? tab : "datasets";
   state.tab = name;
   $$(".tab-panel").forEach((p) => (p.hidden = p.id !== "tab-" + name));
   $$(".tabs a").forEach((a) => a.classList.toggle("active", a.dataset.tab === name));
@@ -122,7 +122,7 @@ async function loadDatasets() {
   fillDatasetSelects();
 }
 
-function groupLabel(g) { return g || "datasets/ (root)"; }
+function groupLabel(g) { return g || "(root folder)"; }
 
 function datasetOptions(filterFn, selected) {
   const groups = new Map();
@@ -152,6 +152,61 @@ function fillDatasetSelects() {
 // ---------------------------------------------------------------------------
 // Tab: Datasets
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Folder details (dataset_info.json + what the folder contains)
+// ---------------------------------------------------------------------------
+const SPLIT_COLORS = { train: "--series-1", val: "--series-2", test: "--series-3" };
+const ROLE_LABEL = { prepared: "Prepared (split) dataset", reindexed: "Re-indexed folder", labeled: "Labeled folder" };
+const fmtRatio = (r) => ["train", "val", "test"].map((k) => {
+  const t = (r?.[k] ?? 0).toFixed(2).replace(/0$/, "");
+  return t.endsWith(".") ? t + "0" : t;
+}).join("-");
+
+function detailsHtml(d, { history = false } = {}) {
+  let html = `<div class="fd-summary"><b>${esc(ROLE_LABEL[d.role] || d.role)}</b> · ${fmtInt(d.num_images)} images · ${d.num_classes} classes`;
+  if (d.role === "prepared") {
+    const c = d.split_counts, total = d.num_images || 1;
+    const ratio = d.configured_ratio || d.actual_ratio;
+    html += `<div>Split train-val-test <b>${fmtRatio(ratio)}</b>${d.configured_ratio ? "" : ` <span class="muted">(measured from the folders)</span>`}`;
+    const drift = d.configured_ratio && ["train", "val", "test"].some((k) => Math.abs(d.configured_ratio[k] - d.actual_ratio[k]) >= 0.03);
+    if (drift) html += ` · actual now ${fmtRatio(d.actual_ratio)}`;
+    html += `</div><div class="fd-ratio" role="img" aria-label="train ${c.train}, val ${c.val}, test ${c.test} images">${
+      ["train", "val", "test"].filter((k) => c[k]).map((k) => `<span style="width:${(c[k] / total) * 100}%;background:var(${SPLIT_COLORS[k]})"></span>`).join("")}</div>
+      <div class="fd-legend">${["train", "val", "test"].map((k) =>
+        `<span><i style="background:var(${SPLIT_COLORS[k]})"></i>${k} ${fmtInt(c[k])} (${Math.round((c[k] / total) * 100)}%)</span>`).join("")}</div>`;
+  }
+  if (d.sources?.length) {
+    const shown = d.sources.slice(0, 8).map((x) => `${esc(x.name)} (${fmtInt(x.images)})`).join(", ");
+    html += `<div class="fd-sources">${d.role === "prepared" ? "Split from" : "Merged from"}: ${shown}${d.sources.length > 8 ? ` +${d.sources.length - 8} more` : ""}</div>`;
+  }
+  const info = d.info || {};
+  html += `<div class="fd-sources">${info.updated_at ? `Last updated ${esc(info.updated_at)} via this UI` : "No dataset_info.json yet — details measured from the folder; it is written on the next run"}</div></div>`;
+  if (history && d.history?.length) {
+    html += `<details style="margin-top:8px"><summary class="muted">Run history (${d.history.length})</summary><div class="table-wrap" style="margin-top:6px;max-height:260px;overflow:auto"><table>
+      <thead><tr><th>Time</th><th>Action</th><th>Sources</th><th>Ratio</th><th class="num">Added</th></tr></thead><tbody>${
+      d.history.slice().reverse().map((h) => `<tr><td>${esc(h.time)}</td><td>${esc(h.action)}</td><td>${(h.sources || []).map(esc).join("<br>")}</td>
+        <td>${h.ratio ? fmtRatio(h.ratio) : "–"}</td>
+        <td class="num">${typeof h.added === "object" ? `${fmtInt(h.added.train)} / ${fmtInt(h.added.val)} / ${fmtInt(h.added.test)}` : fmtInt(h.added)}</td></tr>`).join("")}
+      </tbody></table></div></details>`;
+  }
+  return html;
+}
+
+async function showDetails(id, el, opts = {}) {
+  el.dataset.for = id || "";
+  if (!id) { el.innerHTML = ""; return null; }
+  el.innerHTML = `<span class="muted small">${spinner("Reading folder details…")}</span>`;
+  try {
+    const d = await api(`/datasets/details?id=${encodeURIComponent(id)}`);
+    if (el.dataset.for !== id) return null;
+    el.innerHTML = detailsHtml(d, opts);
+    return d;
+  } catch (e) {
+    if (el.dataset.for === id) el.innerHTML = `<div class="notice bad">${esc(e.message)}</div>`;
+    return null;
+  }
+}
+
 const DS = { selected: null, info: null, editingClasses: false, renaming: false };
 
 function renderDatasetList() {
@@ -190,6 +245,11 @@ async function selectDataset(id, { refresh = false } = {}) {
 }
 
 function renderDatasetDetail() {
+  renderDatasetCard();
+  showDetails(DS.selected, $("#ds-folder-details"), { history: true });
+}
+
+function renderDatasetCard() {
   const d = DS.info;
   const el = $("#ds-detail");
   const folders = d.folders.filter((f) => !f.key.includes("/"));
@@ -236,6 +296,8 @@ function renderDatasetDetail() {
         ${d.kind === "flat" ? `<button class="btn primary" data-act="merge">Re-index for training…</button>` : ""}
         <button class="btn" data-act="refresh" title="Recount images and labels">Recount</button>
       </div>
+      <h3>Folder details</h3>
+      <div id="ds-folder-details" class="folder-details"></div>
       <div id="ds-classes">${renderClassTable(d)}</div>
     </div>`;
 }
@@ -658,6 +720,31 @@ function fillPipelineSelects() {
     `<option value="">None built by splitting yet — create a new one</option>`;
   if (!state.datasets.some((d) => d.preprocess_target)) { $('input[name="sp-target"][value="new"]').click(); }
   renderSourceChecklist();
+  refreshPipelineDetails();
+}
+
+function refreshPipelineDetails() {
+  if (state.tab !== "train") return;
+  showDetails($("#ri-existing").value, $("#ri-details"));
+  showDetails($("#sp-source").value, $("#sp-source-details"));
+  spTargetDetails();
+}
+
+async function spTargetDetails() {
+  const id = $('input[name="sp-target"]:checked').value === "existing" ? $("#sp-existing").value : "";
+  const d = await showDetails(id, $("#sp-details"));
+  const note = $("#sp-ratio-note");
+  if (!d || d.role !== "prepared") {
+    if (!id) note.textContent = "Ratios apply to the newly added images only.";
+    return;
+  }
+  const r = d.configured_ratio || d.actual_ratio;
+  if (TR.ratioFor !== id) {          // fill once per chosen target; later edits are the user's
+    TR.ratioFor = id;
+    $("#sp-val").value = r.val;
+    $("#sp-test").value = r.test;
+  }
+  note.innerHTML = `Filled from <b>${esc(id)}</b>'s split (train-val-test ${fmtRatio(r)}) so new images are split the same way. Ratios apply to newly added images only.`;
 }
 
 function renderSourceChecklist() {
@@ -674,7 +761,13 @@ function renderSourceChecklist() {
   $("#ri-count").textContent = TR.selectedSources.size ? `${TR.selectedSources.size} selected` : "";
 }
 $("#ri-filter").addEventListener("input", renderSourceChecklist);
-$("#ri-existing").addEventListener("change", () => { TR.selectedSources.delete($("#ri-existing").value); renderSourceChecklist(); });
+$("#ri-existing").addEventListener("change", () => {
+  TR.selectedSources.delete($("#ri-existing").value);
+  renderSourceChecklist();
+  showDetails($("#ri-existing").value, $("#ri-details"));
+});
+$("#sp-source").addEventListener("change", () => showDetails($("#sp-source").value, $("#sp-source-details")));
+$("#sp-existing").addEventListener("change", spTargetDetails);
 $("#ri-sources").addEventListener("change", (e) => {
   if (e.target.type !== "checkbox") return;
   if (e.target.checked) TR.selectedSources.add(e.target.value); else TR.selectedSources.delete(e.target.value);
@@ -685,6 +778,7 @@ for (const [name, attr] of [["ri-target", "riTarget"], ["sp-target", "spTarget"]
     const v = $(`input[name="${name}"]:checked`).value;
     $$(`[data-${name}]`).forEach((el) => (el.hidden = el.dataset[attr] !== v));
     if (name === "ri-target") renderSourceChecklist();
+    if (name === "sp-target") spTargetDetails();
   }));
 }
 
@@ -831,6 +925,7 @@ Tabs.train = {
     const sources = params.get("sources");
     if (sources) { sources.split(",").forEach((s) => TR.selectedSources.add(s)); renderSourceChecklist(); }
     $("#tab-train").dataset.ready = "1";
+    refreshPipelineDetails();
     trDatasetInfo();
   },
 };
@@ -1183,6 +1278,271 @@ setInterval(() => { if (state.tab === "monitor" && !document.hidden) monSystem()
 document.addEventListener("visibilitychange", () => { if (!document.hidden) scheduleMonitor(); });
 let resizeTimer;
 window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { MON.histLen = -1; if (MON.detail) monRenderDetail(); }, 200); });
+
+// ---------------------------------------------------------------------------
+// Tab: Test (1. model path -> 2. load -> 3. images)
+// ---------------------------------------------------------------------------
+const TS = { model: null, items: [], seq: 0, ready: false };
+
+function tsRenderModel() {
+  const m = TS.model, el = $("#ts-model");
+  $("#ts-unload").hidden = !m;
+  const dz = $("#ts-drop");
+  dz.setAttribute("aria-disabled", m ? "false" : "true");
+  $(".dz-main", dz).textContent = m ? "Drop images here, click to choose, or paste" : "Load a model first";
+  $(".muted", dz).textContent = m ? "JPG, PNG, WebP or BMP — several at once is fine" : "Then drop images here, click to choose files, or paste (Ctrl+V)";
+  if (!m) { el.className = "status-line"; el.innerHTML = `<span class="muted">No model loaded.</span>`; return; }
+  el.className = "status-line";
+  el.innerHTML = `<div class="notice good"><b>Loaded:</b> ${esc(m.name)} · ${esc(m.task || "detect")} · ${esc(m.device)} · ${m.num_classes} classes · default imgsz ${m.imgsz}
+    <div class="path">${esc(m.path)}</div>
+    <div class="muted small">Loaded ${esc(m.loaded_at)} in ${m.load_seconds}s · file modified ${esc(m.modified)}${m.file_size ? " · " + fmtBytes(m.file_size) : ""}</div></div>
+    <div class="ts-classmap-head"><b>Label mapping</b> <span class="muted small">(class index – name, ${m.num_classes} classes)</span></div>
+    <div class="ts-classmap">${
+      m.class_names.map((n, i) => `<div class="ts-cm-row"><span class="swatch" style="background:${classColor(i)}"></span><span class="ts-cm-idx">${i}</span><span class="ts-cm-sep">-</span><span class="ts-cm-name">${esc(n)}</span></div>`).join("")}</div>
+    ${m.train_args?.data ? `<div class="muted small" style="margin-top:6px">Trained on: <span class="mono">${esc(m.train_args.data)}</span>${m.train_args.epochs ? ` · ${m.train_args.epochs} epochs` : ""}</div>` : ""}`;
+}
+
+async function tsLoadOptions() {
+  try {
+    const [models, sys] = await Promise.all([api("/models/available"), api("/system/status")]);
+    $("#test-model-options").innerHTML = models.models.filter((m) => m.kind !== "pretrained").map((m) =>
+      `<option value="${esc(m.value)}">${esc(m.kind === "trained" ? "trained: " + m.label : "local: " + m.label)}</option>`).join("");
+    $("#ts-device").innerHTML = sys.gpus.map((g) => `<option value="cuda:${g.index}">cuda:${g.index} · ${esc(g.name)}</option>`).join("") + `<option value="cpu">cpu</option>`;
+  } catch { $("#ts-device").innerHTML = `<option>cpu</option><option>cuda:0</option>`; }
+}
+
+$("#ts-load").addEventListener("click", async () => {
+  const btn = $("#ts-load"), el = $("#ts-model");
+  const path = $("#ts-path").value.trim();
+  if (!path) { setStatus(el, "Enter the model path first.", "err"); return; }
+  btn.disabled = true;
+  setStatus(el, spinner("Loading model…"));
+  try {
+    const r = await api("/test/load", { json: { path, device: $("#ts-device").value } });
+    TS.model = r.model;
+    store.set("ts-path", path);
+    tsRenderModel();
+    toast(`Model loaded: ${r.model.name}`, "ok");
+  } catch (e) { TS.model = null; tsRenderModel(); setStatus(el, esc(e.message), "err"); }
+  finally { btn.disabled = false; }
+});
+$("#ts-unload").addEventListener("click", async () => {
+  try { await api("/test/unload", { method: "POST" }); } catch (e) { toast(e.message, "err"); }
+  TS.model = null; tsRenderModel();
+});
+$("#ts-path").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#ts-load").click(); });
+
+for (const [id, out, d] of [["#ts-conf", "#ts-conf-v", 2], ["#ts-iou", "#ts-iou-v", 2]]) {
+  $(id).addEventListener("input", () => { $(out).textContent = Number($(id).value).toFixed(d); });
+}
+
+function tsParams() {
+  const q = new URLSearchParams({ conf: $("#ts-conf").value, iou: $("#ts-iou").value });
+  if ($("#ts-imgsz").value) q.set("imgsz", $("#ts-imgsz").value);
+  return q;
+}
+
+function tsDetBoxes(dets) {
+  return dets.map((d) => {
+    const left = (d.x - d.w / 2) * 100, top = (d.y - d.h / 2) * 100, color = classColor(d.cls);
+    return `<div class="box ${top < 7 ? "below" : ""}" style="left:${left}%;top:${top}%;width:${d.w * 100}%;height:${d.h * 100}%;border-color:${color}">
+      <span class="tag" style="background:${color}">${esc(d.name)} ${d.conf.toFixed(2)}</span></div>`;
+  }).join("");
+}
+
+function tsRenderItem(it) {
+  let el = $(`#ts-item-${it.id}`);
+  if (!el) {
+    el = document.createElement("div");
+    el.className = "ts-item"; el.id = `ts-item-${it.id}`;
+    $("#ts-results").prepend(el);
+  }
+  const r = it.result;
+  const body = it.error ? `<div class="notice bad">${esc(it.error)}</div>`
+    : !r ? `<p class="muted">${spinner("Detecting…")}</p>`
+    : `<div><b>${r.detections.length}</b> detection${r.detections.length === 1 ? "" : "s"} · ${r.total_ms} ms
+        <span class="muted small">(${Object.entries(r.speed_ms).map(([k, v]) => `${k} ${v}`).join(" · ")} ms)</span></div>
+       <div class="muted small">${r.width}×${r.height}px · conf ≥ ${r.conf} · IoU ${r.iou} · imgsz ${r.imgsz} · ${esc(r.model)}</div>
+       ${r.detections.length ? `<div class="table-wrap"><table><thead><tr><th>Class</th><th class="num">Conf</th><th class="num">Box (x y w h)</th></tr></thead><tbody>${
+         r.detections.map((d) => `<tr><td style="white-space:nowrap"><span class="swatch" style="background:${classColor(d.cls)}"></span>${esc(d.name)} <span class="muted">#${d.cls}</span></td>
+           <td class="num"><span class="conf-bar"><span style="width:${d.conf * 100}%"></span></span>${d.conf.toFixed(2)}</td>
+           <td class="num mono" style="font-size:11px">${[d.x, d.y, d.w, d.h].map((v) => v.toFixed(3)).join(" ")}</td></tr>`).join("")}</tbody></table></div>`
+         : `<p class="muted">Nothing detected at this confidence. Try lowering it.</p>`}`;
+  el.innerHTML = `
+    <div class="ts-img"><div class="imgbox"><img src="${it.url}" alt="${esc(it.name)}">${r ? tsDetBoxes(r.detections) : ""}</div></div>
+    <div class="ts-meta"><div class="fn">${esc(it.name)}</div>${body}</div>`;
+}
+
+async function tsRun(it) {
+  it.result = null; it.error = null;
+  tsRenderItem(it);
+  try {
+    it.result = await api("/test/predict?" + tsParams(), { method: "POST", body: it.blob, headers: { "Content-Type": "application/octet-stream" } });
+  } catch (e) { it.error = e.message; }
+  tsRenderItem(it);
+}
+
+async function tsAddFiles(files) {
+  if (!TS.model) { toast("Load a model first.", "err"); return; }
+  const imgs = [...files].filter((f) => f.type.startsWith("image/") || /\.(jpe?g|png|webp|bmp)$/i.test(f.name));
+  if (!imgs.length) { toast("No image files found.", "err"); return; }
+  $("#ts-tools").hidden = false;
+  for (const f of imgs) {                       // sequential: the server runs one inference at a time
+    const it = { id: ++TS.seq, name: f.name || "pasted image", blob: f, url: URL.createObjectURL(f) };
+    TS.items.push(it);
+    await tsRun(it);
+  }
+}
+
+const dz = $("#ts-drop");
+dz.addEventListener("click", () => { if (TS.model) $("#ts-file").click(); });
+dz.addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && TS.model) { e.preventDefault(); $("#ts-file").click(); } });
+$("#ts-file").addEventListener("change", (e) => { tsAddFiles(e.target.files); e.target.value = ""; });
+dz.addEventListener("dragover", (e) => { e.preventDefault(); dz.classList.add("over"); });
+dz.addEventListener("dragleave", () => dz.classList.remove("over"));
+dz.addEventListener("drop", (e) => { e.preventDefault(); dz.classList.remove("over"); tsAddFiles(e.dataTransfer.files); });
+document.addEventListener("paste", (e) => {
+  if (state.tab !== "test" || !e.clipboardData) return;
+  const files = [...e.clipboardData.items].filter((i) => i.kind === "file").map((i) => i.getAsFile()).filter(Boolean);
+  if (files.length) { e.preventDefault(); tsAddFiles(files); }
+});
+$("#ts-rerun").addEventListener("click", async () => { for (const it of TS.items.slice()) await tsRun(it); });
+$("#ts-clear").addEventListener("click", () => {
+  TS.items.forEach((it) => URL.revokeObjectURL(it.url));
+  TS.items = []; $("#ts-results").innerHTML = ""; $("#ts-tools").hidden = true;
+});
+
+Tabs.test = {
+  async enter() {
+    if (!TS.ready) {
+      TS.ready = true;
+      if (!$("#ts-path").value) $("#ts-path").value = store.get("ts-path");
+      await tsLoadOptions();
+    }
+    try { const r = await api("/test/model"); TS.model = r.model; } catch { /* keep current */ }
+    if (TS.model) { $("#ts-path").value = TS.model.path; $("#ts-device").value = TS.model.device; }
+    if (TS.pendingPath) {  // from Export → "Test in Test tab": prefill, user clicks Load
+      $("#ts-path").value = TS.pendingPath; TS.pendingPath = null;
+      if (TS.model?.path !== $("#ts-path").value) $("#ts-path").focus();
+    }
+    tsRenderModel();
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Tab: Export ONNX
+// ---------------------------------------------------------------------------
+const EX = { ready: false, info: null, seq: 0 };
+
+function exFileRow(label, f, kind) {
+  if (!f) return "";
+  return `<div class="ex-file">
+    <div><b>${esc(label)}</b> ${f.stale ? `<span class="pill warn" title="Older than the .pt — convert again to update">older than .pt</span>` : ""}</div>
+    <div class="mono small">${esc(f.path)}</div>
+    <div class="muted small">${fmtBytes(f.size)} · ${esc(f.modified)}</div>
+    <div class="btn-row" style="margin-top:4px">
+      <a class="btn small" href="/export/download?path=${encodeURIComponent(f.path)}" download>Download${f.is_dir ? " (.zip)" : ""}</a>
+      ${kind === "onnx" ? `<button class="btn small" data-ex-test="${esc(f.path)}">Test in Test tab</button>` : ""}
+    </div></div>`;
+}
+
+function exClassMap(names) {
+  if (!names?.length) return "";
+  return `<div class="ts-classmap-head"><b>Label mapping</b> <span class="muted small">(${names.length} classes)</span></div>
+    <div class="ts-classmap">${names.map((n, i) => `<div class="ts-cm-row"><span class="swatch" style="background:${classColor(i)}"></span><span class="ts-cm-idx">${i}</span><span class="ts-cm-sep">-</span><span class="ts-cm-name">${esc(n)}</span></div>`).join("")}</div>`;
+}
+
+async function exInspect() {
+  const path = $("#ex-path").value.trim(), el = $("#ex-info"), seq = ++EX.seq;
+  EX.info = null;
+  if (!path) { setStatus(el, ""); return; }
+  setStatus(el, spinner("Reading checkpoint…"));
+  try {
+    const r = await api("/export/inspect?" + new URLSearchParams({ path }));
+    if (seq !== EX.seq) return;
+    EX.info = r;
+    const m = r.model, ex = r.existing;
+    $("#ex-imgsz").placeholder = m.imgsz ? `as trained (${m.imgsz})` : "as trained";
+    setStatus(el, `<div class="notice">${esc(m.name)} · ${fmtBytes(m.size)} · modified ${esc(m.modified)}${m.class_names ? ` · ${m.class_names.length} classes` : ""}${m.imgsz ? ` · trained at ${m.imgsz}px` : ""}
+      ${m.train_data ? `<div class="muted small">Trained on: <span class="mono">${esc(m.train_data)}</span></div>` : ""}
+      ${m.error ? `<div class="muted small">${esc(m.error)}</div>` : ""}</div>
+      ${ex.onnx || ex.openvino ? `<div class="muted small" style="margin-top:6px">Already exported next to it (converting again replaces it):</div>${exFileRow("ONNX", ex.onnx, "onnx")}${exFileRow("OpenVINO", ex.openvino, "ov")}` : ""}`);
+  } catch (e) { if (seq === EX.seq) setStatus(el, esc(e.message), "err"); }
+}
+
+$("#ex-path").addEventListener("change", exInspect);
+$("#ex-path").addEventListener("keydown", (e) => { if (e.key === "Enter") exInspect(); });
+$("#ex-half").addEventListener("change", () => { if ($("#ex-half").checked) $("#ex-dynamic").checked = false; });
+$("#ex-dynamic").addEventListener("change", () => { if ($("#ex-dynamic").checked) $("#ex-half").checked = false; });
+
+$("#ex-go").addEventListener("click", async () => {
+  const path = $("#ex-path").value.trim(), st = $("#ex-status"), btn = $("#ex-go");
+  if (!path) { setStatus(st, "Enter the .pt path first.", "err"); return; }
+  const num = (id) => ($(id).value ? Number($(id).value) : null);
+  const body = {
+    path, imgsz: num("#ex-imgsz"), batch: num("#ex-batch") || 1, opset: num("#ex-opset"),
+    device: $("#ex-device").value, simplify: $("#ex-simplify").checked, dynamic: $("#ex-dynamic").checked,
+    half: $("#ex-half").checked, openvino: $("#ex-openvino").checked,
+  };
+  btn.disabled = true;
+  const t0 = Date.now();
+  const tick = () => setStatus(st, spinner(`Converting… ${fmtDuration((Date.now() - t0) / 1000)}`));
+  tick(); const timer = setInterval(tick, 1000);
+  try {
+    const r = await api("/export/onnx", { json: body });
+    store.set("ex-path", path);
+    exRenderResult(r);
+    if (r.ok) { setStatus(st, `Done in ${r.seconds}s.`, "ok"); toast("Exported " + r.onnx.name, "ok"); }
+    else setStatus(st, "Export failed — see the log on the right.", "err");
+    exInspect();
+  } catch (e) { setStatus(st, esc(e.message), "err"); }
+  finally { clearInterval(timer); btn.disabled = false; }
+});
+
+function exRenderResult(r) {
+  const el = $("#ex-result");
+  const log = `<details ${r.ok ? "" : "open"}><summary class="muted small">Export log</summary><pre class="console ex-log">${esc(r.log || "")}</pre></details>`;
+  if (!r.ok) { el.innerHTML = `<div class="notice bad"><b>Export failed:</b> ${esc(r.error)}</div>${log}`; return; }
+  const v = r.verify || {}, shp = (x) => `${esc(x.name)} [${x.shape.map((d) => esc(String(d))).join(", ")}] ${esc(x.type.replace(/^tensor\((.*)\)$/, "$1"))}`;
+  const o = r.options;
+  el.innerHTML = `
+    <div class="notice ${v.ok ? "good" : "bad"}"><b>${v.ok ? "Converted and verified" : "Converted, but onnxruntime couldn't run it"}</b> · ${r.seconds}s
+      <div class="muted small">imgsz ${o.imgsz || "as trained"} · batch ${o.batch} · ${o.dynamic ? "dynamic" : "static"} · ${o.half ? "FP16" : "FP32"} · ${o.simplify ? "simplified" : "not simplified"}${o.opset ? ` · opset ${o.opset}` : ""} · ${esc(o.device)}</div></div>
+    ${exFileRow("ONNX", r.onnx, "onnx")}
+    ${r.openvino ? exFileRow("OpenVINO", r.openvino, "ov") : ""}
+    ${r.openvino_error ? `<div class="notice bad">OpenVINO export failed: ${esc(r.openvino_error)}</div>` : ""}
+    ${v.ok ? `<dl class="kv" style="margin-top:10px">
+      <dt>Input</dt><dd>${v.inputs.map(shp).join("<br>")}</dd>
+      <dt>Output</dt><dd>${v.outputs.map(shp).join("<br>")}</dd>
+      ${v.metadata?.task ? `<dt>Task</dt><dd>${esc(v.metadata.task)}</dd>` : ""}
+      ${v.metadata?.stride ? `<dt>Stride</dt><dd>${esc(v.metadata.stride)}</dd>` : ""}
+      ${v.metadata?.version ? `<dt>Ultralytics</dt><dd>${esc(v.metadata.version)}</dd>` : ""}
+      <dt>CPU test run</dt><dd>${v.cpu_inference_ms} ms (onnxruntime, one image)</dd>
+    </dl>${exClassMap(v.class_names)}` : `<div class="err-pre">${esc(v.error || "")}</div>`}
+    ${log}`;
+}
+
+$("#tab-export").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-ex-test]");
+  if (!b) return;
+  TS.pendingPath = b.dataset.exTest;
+  location.hash = "#test";
+});
+
+Tabs.export = {
+  async enter() {
+    if (EX.ready) return;
+    EX.ready = true;
+    if (!$("#ex-path").value) $("#ex-path").value = store.get("ex-path");
+    try {
+      const [models, sys] = await Promise.all([api("/models/available"), api("/system/status")]);
+      $("#export-model-options").innerHTML = models.models.filter((m) => m.kind !== "pretrained").map((m) =>
+        `<option value="${esc(m.value)}">${esc(m.kind === "trained" ? "trained: " + m.label : "local: " + m.label)}</option>`).join("");
+      $("#ex-device").innerHTML = `<option value="cpu">cpu</option>` + sys.gpus.map((g) => `<option value="cuda:${g.index}">cuda:${g.index} · ${esc(g.name)}</option>`).join("");
+    } catch { $("#ex-device").innerHTML = `<option>cpu</option><option>cuda:0</option>`; }
+    if ($("#ex-path").value) exInspect();
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Dataset root

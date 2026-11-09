@@ -34,7 +34,7 @@ logger = logging.getLogger("backend_log")
 # ---------------------------------------------------------------------------
 # Base directories
 # ---------------------------------------------------------------------------
-BASE_DATASET_DIR = Path(__file__).resolve().parent / "datasets"
+BASE_DATASET_DIR = Path(__file__).resolve().parent / "dataset"
 BASE_MODEL_DIR = Path(__file__).resolve().parent / "models"
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
@@ -609,7 +609,7 @@ class YOLOTrainBackend:
         self.model_name = model
         self._model: Optional[YOLO] = None
 
-        # dataset_path/output_path override the default datasets/{job_name}/
+        # dataset_path/output_path override the default dataset/{job_name}/
         # and models/{job_name}/ conventions, letting a job read/write at
         # arbitrary filesystem paths. output_path still gets a job_name
         # subfolder, so multiple jobs sharing one output_path don't collide.

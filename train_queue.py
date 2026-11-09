@@ -139,7 +139,7 @@ def run_training_job(
     ``roboflow`` is None for jobs training on an already-local dataset —
     the pipeline then skips the download step entirely. ``dataset_path``,
     when given, points the backend at that filesystem location instead of
-    the default datasets/{job_name}/ convention (used by local jobs).
+    the default dataset/{job_name}/ convention (used by local jobs).
     ``output_path``, when given, stores the trained model + evaluation
     results there instead of the default models/{job_name}/.
     """

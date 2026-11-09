@@ -3,7 +3,7 @@ Dataset Manager
 ===============
 Filesystem logic behind the web UI's dataset features:
 
-- discovery of YOLO datasets under ``datasets/`` (any depth)
+- discovery of YOLO datasets under the dataset root (default ``dataset/``, any depth)
 - class-name (index -> name) mapping, instance counts, and class renaming
 - dataset folder renaming (keeping symlinks / preprocess state that point at it intact)
 - importing datasets from a zip upload or a server-side folder
@@ -50,7 +50,7 @@ logger = logging.getLogger("dataset_manager")
 PROJECT_DIR = Path(__file__).resolve().parent
 CACHE_DIR = PROJECT_DIR / ".cache"
 THUMB_DIR = CACHE_DIR / "thumbs"
-SETTINGS_FILE = PROJECT_DIR / "ui_settings.json"
+SETTINGS_FILE = Path(os.environ.get("YOLO_UI_SETTINGS", PROJECT_DIR / "ui_settings.json"))
 
 PREVIEW_IMAGE_EXTENSIONS = IMAGE_EXTENSIONS
 SPLIT_NAMES = ("train", "val", "test")
@@ -134,7 +134,7 @@ def forget_root(path: str) -> dict[str, Any]:
     with _settings_lock:
         data = _load_settings()
         if path == str(BASE_DATASET_DIR):
-            raise DatasetError("The project's own datasets/ folder can't be removed.")
+            raise DatasetError("The project's own dataset/ folder can't be removed.")
         data["roots"] = [r for r in data["roots"] if r != path]
         if data["dataset_root"] == path:
             data["dataset_root"] = str(BASE_DATASET_DIR)
@@ -241,7 +241,7 @@ def validate_name(name: str, what: str = "name") -> str:
 
 
 def validate_group(group: str) -> str:
-    """A relative folder path under datasets/ (e.g. '1.labeled'); '' means the root."""
+    """A relative folder path under the dataset root (e.g. '1.labeled'); '' means the root."""
     group = (group or "").strip().strip("/")
     if not group:
         return ""
@@ -252,7 +252,7 @@ def validate_group(group: str) -> str:
 
 def _abs(path: Path | str) -> Path:
     """Absolute, normalized path WITHOUT resolving symlinks (a dataset may be a
-    symlink to a folder elsewhere — it still lives at its datasets/ location)."""
+    symlink to a folder elsewhere — it still lives at its location under the root)."""
     return Path(os.path.abspath(path))
 
 
@@ -424,7 +424,7 @@ def discover() -> list[Dataset]:
 
 
 def list_groups() -> list[str]:
-    """Top-level folders under datasets/ that aren't datasets themselves."""
+    """Top-level folders under the dataset root that aren't datasets themselves."""
     root = get_root()
     if not root.is_dir():
         return []
@@ -692,7 +692,7 @@ def rename_classes(ds: Dataset, new_names: list[str]) -> list[str]:
 # Dataset renaming
 # ---------------------------------------------------------------------------
 def _retarget_references(old: Path, new: Path) -> dict[str, int]:
-    """After moving old -> new, repoint symlinks under datasets/ and the
+    """After moving old -> new, repoint symlinks under the dataset root and the
     .preprocess_state.json entries that referenced files under ``old``."""
     old_s, new_s = str(old), str(new)
     links = states = 0
@@ -1078,3 +1078,118 @@ def repoint_state(target: Path, source: Path) -> dict[str, Any]:
     sf.write_text(json.dumps(data, indent=2), encoding="utf-8")
     logger.info("Repointed %d preprocess records in %s to %s (backup %s)", changed, target, source, backup.name)
     return {"repointed": changed, "backup": str(backup)}
+
+
+# ---------------------------------------------------------------------------
+# Folder details: dataset_info.json (written on every re-index / split run)
+# ---------------------------------------------------------------------------
+INFO_FILE = "dataset_info.json"
+
+
+def read_info(path: Path) -> Optional[dict[str, Any]]:
+    try:
+        data = json.loads((Path(path) / INFO_FILE).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _fmt_ratio(r: dict[str, float]) -> str:
+    """{'train': .7, 'val': .3, 'test': 0} -> '0.7-0.3-0.0'"""
+    def one(v: float) -> str:
+        t = f"{v:.2f}".rstrip("0")
+        return t + "0" if t.endswith(".") else t
+    return "-".join(one(r.get(s, 0)) for s in SPLIT_NAMES)
+
+
+def _sources_from_paths(paths: Iterable[str]) -> list[dict[str, Any]]:
+    """Group recorded image paths by the folder they came from (the part before /images/)."""
+    counts: dict[str, int] = {}
+    for p in paths:
+        src = p.split(f"{os.sep}images{os.sep}")[0] if f"{os.sep}images{os.sep}" in p else str(Path(p).parent)
+        counts[src] = counts.get(src, 0) + 1
+    return [{"path": k, "name": Path(k).name, "images": v} for k, v in sorted(counts.items())]
+
+
+def folder_details(ds: Dataset) -> dict[str, Any]:
+    """What a folder is and how it was built — from dataset_info.json when
+    present, otherwise worked out from its contents and state files."""
+    info = read_info(ds.path)
+    out: dict[str, Any] = {"id": ds.id, "path": str(ds.path), "kind": ds.kind,
+                           "num_classes": len(ds.class_names), "info": info}
+    if ds.kind == "split":
+        counts = {s: 0 for s in SPLIT_NAMES}
+        for f in ds.folders:
+            if f.key in counts:
+                counts[f.key] = _count_images(f.images_dir)
+        total = sum(counts.values())
+        actual = {s: round(counts[s] / total, 2) if total else 0.0 for s in SPLIT_NAMES}
+        configured = (info or {}).get("split_ratio")
+        sf = ds.path / ".preprocess_state.json"
+        sources = []
+        if sf.is_file():
+            try:
+                sources = _sources_from_paths(json.loads(sf.read_text(encoding="utf-8")).get("processed_images", []))
+            except (OSError, json.JSONDecodeError):
+                pass
+        out.update(role="prepared", num_images=total, split_counts=counts, actual_ratio=actual,
+                   configured_ratio=configured, sources=sources)
+        ratio = configured or actual
+        summary = (f"Prepared dataset · {total:,} images · {len(ds.class_names)} classes · split train-val-test "
+                   f"{_fmt_ratio(ratio)} ({counts['train']:,} / {counts['val']:,} / {counts['test']:,})")
+        if configured and any(abs(configured[s] - actual[s]) >= 0.03 for s in SPLIT_NAMES):
+            summary += f" · actual {_fmt_ratio(actual)}"
+        if sources:
+            summary += " · from " + ", ".join(f"{s['name']} ({s['images']:,})" for s in sources)
+    else:
+        total = _count_images(ds.path / "images")
+        sf = ds.path / _REINDEX_STATE
+        sources = []
+        if sf.is_file():
+            try:
+                merged = json.loads(sf.read_text(encoding="utf-8")).get("merged", {})
+                sources = _sources_from_paths(merged.keys())
+            except (OSError, json.JSONDecodeError):
+                pass
+        role = "reindexed" if (sources or (info or {}).get("kind") == "reindexed") else "labeled"
+        out.update(role=role, num_images=total, sources=sources)
+        if role == "reindexed":
+            summary = (f"Re-indexed folder · {total:,} images · {len(ds.class_names)} classes"
+                       + (f" · merged from {len(sources)} labeled folder(s)" if sources else ""))
+        else:
+            summary = f"Labeled folder · {total:,} images · {len(ds.class_names)} classes"
+    if info and info.get("updated_at"):
+        summary += f" · last updated {info['updated_at']}"
+    out["summary"] = summary
+    out["history"] = (info or {}).get("history", [])
+    return out
+
+
+def record_run(path: Path, kind: str, entry: dict[str, Any],
+               split_ratio: Optional[dict[str, float]] = None) -> None:
+    """Append a run to path/dataset_info.json and refresh its summary.
+    Never raises — a details file must not break a successful run."""
+    try:
+        path = Path(path)
+        info = read_info(path) or {"created_at": _now()}
+        info["kind"] = kind
+        info["updated_at"] = _now()
+        if split_ratio is not None:
+            info["split_ratio"] = split_ratio
+        info.setdefault("history", []).append({"time": _now(), **entry})
+        info["history"] = info["history"][-200:]
+        try:
+            info["summary"] = folder_details(load_dataset(path, get_root() if _abs(path).is_relative_to(get_root()) else path.parent))["summary"]
+        except Exception:
+            pass
+        # Keep "summary" first so the file reads well when opened directly.
+        ordered = {"summary": info.pop("summary", ""), **info}
+        tmp = path / f".{INFO_FILE}.tmp"
+        tmp.write_text(json.dumps(ordered, indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path / INFO_FILE)
+    except Exception:
+        logger.exception("Could not write %s in %s", INFO_FILE, path)

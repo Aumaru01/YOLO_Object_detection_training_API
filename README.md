@@ -29,7 +29,7 @@ POST /train_local_data ─────┘                                       
 
 The API layer is separate from training execution. When a training request comes in, the API validates the payload, enqueues a job in memory, and immediately returns a `job_id` and `job_name`. A background dispatcher thread (started with the API — nothing extra to run) picks jobs off the queue one at a time and runs the pipeline in its own worker subprocess, so a running job can still be canceled by terminating it.
 
-- `/train_roboflow_data` downloads the dataset into `datasets/{job_name}/` first.
+- `/train_roboflow_data` downloads the dataset into `dataset/{job_name}/` first.
 - `/train_local_data` trains **in place** on an already-preprocessed dataset at any filesystem path — nothing is copied.
 - Model weights and evaluation results go to `models/{job_name}/` by default, or to `{output_path}/{job_name}/` if `output_path` is given — so multiple jobs can share one `output_path` without colliding.
 
@@ -41,6 +41,8 @@ The API layer is separate from training execution. When a training request comes
 ├── api_main.py             # Entry point — FastAPI app, training/job routes, serves the UI   (python -m api_main)
 ├── api_schemas.py          # Pydantic request/response models
 ├── api_ui_routes.py        # JSON endpoints for the web UI (datasets, preview, Label Studio, settings, system)
+├── api_model_test.py       # Test tab: load a model and run it on uploaded images
+├── api_model_export.py     # Export ONNX tab: convert .pt -> .onnx (+ OpenVINO), verify with onnxruntime
 ├── train_queue.py          # In-process job queue — runs each job in a worker subprocess, per-job logs
 ├── train_backend.py        # YOLO training/evaluation, Roboflow download, preprocess (split), progress reporting
 ├── data_manager.py         # Dataset discovery, class mapping, rename, import, re-index, preview
@@ -53,11 +55,11 @@ The API layer is separate from training execution. When a training request comes
 Output directories (created automatically):
 
 ```
-├── datasets/{job_name}/        # Roboflow-downloaded dataset for each job
+├── dataset/{job_name}/         # Roboflow-downloaded dataset for each job
 └── models/{job_name}/          # Trained model weights & plots for each job
 ```
 
-Raw data and preprocessed (output) datasets live wherever you point `raw_path` / `output_path` / `dataset_path` — neither has to be under `datasets/`.
+Raw data and preprocessed (output) datasets live wherever you point `raw_path` / `output_path` / `dataset_path` — neither has to be under `dataset/`.
 
 ## Setup
 
@@ -82,17 +84,21 @@ The job queue and its worker start automatically with the API — there's no sep
 
 Open **`http://<host>:1234/`** (redirects to `/ui/`). Nothing extra to install or build — it's served by the same API process.
 
-**Dataset root** (top-right picker): the folder the UI works in — the project's `datasets/` by default. Choose *Add / manage folders…* to add another, e.g. `/home/ai-model/logo-detection/dataset/___main___sonar_data`. The list and the current choice are saved in `ui_settings.json`.
+**Dataset root** (top-right picker): the folder the UI works in — the project's `dataset/` by default. Choose *Add / manage folders…* to add another, e.g. `/home/ai-model/logo-detection/3.0/dataset`. The list and the current choice are saved in `ui_settings.json`.
 
 | Tab | What it does |
 |---|---|
-| **Datasets** | Lists every YOLO dataset found under `datasets/` (any depth). *Prepared* = has a `data.yaml` with splits (trainable); *Source* = flat `images/` + `labels/` export (e.g. Label Studio YOLO export). Shows the **class index → data name** table with box/image counts per class. **Rename** a dataset folder (symlinks and `.preprocess_state.json` entries in other datasets that point at it are updated) or **edit class names** (indices — and so label files — stay unchanged). **Import** a zip upload or a folder already on the server. |
+| **Datasets** | Lists every YOLO dataset found under the dataset root (any depth). *Prepared* = has a `data.yaml` with splits (trainable); *Source* = flat `images/` + `labels/` export (e.g. Label Studio YOLO export). Shows the **class index → data name** table with box/image counts per class. **Rename** a dataset folder (symlinks and `.preprocess_state.json` entries in other datasets that point at it are updated) or **edit class names** (indices — and so label files — stay unchanged). **Import** a zip upload or a folder already on the server. |
 | **Preview** | Browse images per dataset and folder (split) with boxes drawn and class names on each box. Filter by class, file name, or unlabeled/empty images; click for a full-size view (← → to browse, B toggles boxes). |
 | **Label Studio** | Export a dataset as Label Studio tasks with the existing boxes pre-filled (as annotations or predictions) plus a matching labeling config — download as a zip, or send straight to a Label Studio instance (creates the project and imports the tasks). Images are referenced by URL on this API, or via Label Studio local-file serving. |
 | **Train** | The `1.labeled → 2.re_index_label → 3.preprocessed → train` pipeline: **(1) Re-index** — merge Label Studio exports into one folder with a single `classes.txt` (like `merge_relabel.py`, but existing class indices are kept, new names appended, and images already merged are skipped). **(2) Split** — add the re-indexed images to a prepared dataset (`POST /preprocess_data` logic: only images not split before are added). **(3) Train** — queue a job (`POST /train_local_data`). Starting weights can be a pretrained checkpoint or a previous run's `best.pt`. |
 | **Monitor** | Job list plus, per job: stage, epoch/batch progress bars, ETA, live loss and mAP charts (with an epoch table), the worker's live stdout/stderr, process PID/exit code, final metrics or the error traceback, and GPU/RAM/disk usage. Cancel queued or running jobs. |
+| **Test** | Try a model: (1) enter a weights path (e.g. `models/<job>/train/weights/best.pt`, absolute or project-relative; suggestions list trained runs), (2) **Load model** on a chosen device — it stays loaded in the API process until unloaded or replaced, (3) drop / choose / paste images to see detections drawn with class + confidence, timing, and a detection table. Confidence, IoU and image size are adjustable; *Re-run all* reapplies them. Endpoints: `POST /test/load`, `POST /test/predict` (raw image body), `GET /test/model`, `POST /test/unload`. |
+| **Export ONNX** | Convert trained weights to ONNX: (1) enter a `.pt` path — shows its classes, training size and any exports already next to it (flagged if older than the `.pt`), (2) options: image size (default = trained size), batch, opset, device, simplify, dynamic axes, FP16 (GPU only), optionally OpenVINO too, (3) **Convert** — written next to the `.pt` as `<name>.onnx` (replacing an older one), then opened with onnxruntime to show input/output shapes, the embedded label mapping and a CPU test-inference time. Download the `.onnx` (or the OpenVINO folder as a zip) or open it in the Test tab. The conversion runs in a separate process; one at a time. Endpoints: `GET /export/inspect?path=`, `POST /export/onnx`, `GET /export/download?path=`, `GET /export/status`. |
 
 Typical retraining loop: export *YOLO* from Label Studio → **Datasets → Import** into `1.labeled` → **Train → Re-index** into `2.re_index_label` → **Split** into `3.preprocessed` → **Train** → **Monitor**.
+
+**Folder details (`dataset_info.json`).** Every Re-index and Split run writes a `dataset_info.json` into the target folder: a one-line `summary` (e.g. *Prepared dataset · 1,271 images · 19 classes · split train-val-test 0.7-0.3-0.0 (890 / 381 / 0) · from 2.reindex*), the configured `split_ratio`, and a `history` of runs (time, sources, ratio, images added). When you pick an existing folder in the Train tab, the UI reads it and shows these details, and pre-fills the val/test ratio with that dataset's ratio so new images are split the same way. Folders created before this file existed show details measured from their contents; the file is written on their next run. The Datasets tab shows the same details plus the full run history (`GET /datasets/details?id=`).
 
 > Split records each image by absolute path (`.preprocess_state.json`). If the prepared dataset was split from a different copy of the same folder (e.g. the share vs a local copy), the UI detects it and offers to **repoint** the records first (a backup is kept) instead of adding duplicates. Images with `.jpg/.jpeg/.png/.bmp/.webp` extensions are included.
 
@@ -102,7 +108,7 @@ Per-job files live in `logs/jobs/{job_id}/`: `train.log` (worker output), `progr
 
 ### UI endpoints
 
-Dataset ids are paths relative to `datasets/` (e.g. `1.labeled/pea_all`).
+Dataset ids are paths relative to the dataset root (e.g. `1.labeled/pea_all`).
 
 | Endpoint | Purpose |
 |---|---|
@@ -200,7 +206,7 @@ Response:
   "result": {
     "job_name": "my_logo_v1",
     "model_dir": "models/my_logo_v1",
-    "dataset_dir": "datasets/my_logo_v1",
+    "dataset_dir": "dataset/my_logo_v1",
     "epochs": 100,
     "device": "cuda",
     "mAP50": 0.8923,
@@ -335,8 +341,8 @@ A `data.yaml` (searched for directly at the given path, then recursively in subd
 
 `/train_roboflow_data` jobs execute three steps in sequence; `/train_local_data` jobs skip the download step:
 
-1. **Download** (roboflow only) — Fetches the dataset from Roboflow into `datasets/{job_name}/`.
+1. **Download** (roboflow only) — Fetches the dataset from Roboflow into `dataset/{job_name}/`.
 2. **Train** — Fine-tunes the YOLOv8 model. Weights are saved to `{model_dir}/train/weights/` (`best.pt`, `last.pt`).
 3. **Evaluate** — Runs validation against the `val` split, saving plots/results to `{model_dir}/val/`, and returns `mAP50`/`mAP50_95`. If the dataset's `data.yaml` also defines a `test` split, a second pass runs against it, saving to `{model_dir}/test/` and adding `test_mAP50`/`test_mAP50_95` to the result.
 
-`{model_dir}` is `{output_path}/{job_name}/` if you passed `output_path`, or `models/{job_name}/` if you didn't — always scoped to the job, even when several jobs share one `output_path`. Job results and status are kept in memory for the lifetime of the API process; trained models and evaluation results persist on disk under `{model_dir}`. Datasets persist wherever they live — `datasets/{job_name}/` for Roboflow downloads, or whatever `dataset_path` was given for local jobs.
+`{model_dir}` is `{output_path}/{job_name}/` if you passed `output_path`, or `models/{job_name}/` if you didn't — always scoped to the job, even when several jobs share one `output_path`. Job results and status are kept in memory for the lifetime of the API process; trained models and evaluation results persist on disk under `{model_dir}`. Datasets persist wherever they live — `dataset/{job_name}/` for Roboflow downloads, or whatever `dataset_path` was given for local jobs.

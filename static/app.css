@@ -343,6 +343,14 @@ progress { width: 100%; }
 .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ---------- medium screens: tabs get their own row ---------- */
+@media (max-width: 1500px) {
+  .topbar { row-gap: 0; }
+  .brand { flex: 1; }
+  .tabs { order: 3; flex-basis: 100%; margin: 0 -20px; padding: 0 12px; border-top: 1px solid var(--border); }
+  .tabs a { padding: 10px 12px 8px; }
+}
+
 /* ---------- narrow screens ---------- */
 @media (max-width: 760px) {
   .topbar { gap: 0 16px; padding: 0 16px; }
@@ -361,3 +369,51 @@ progress { width: 100%; }
 .root-row.current { border-color: var(--accent); background: var(--accent-soft); }
 .root-row .p { flex: 1; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
 @media (max-width: 760px) { .root-picker { order: 2; flex-basis: 100%; padding-bottom: 8px; } .root-picker select { flex: 1; max-width: none; } }
+
+.folder-details { margin: 8px 0 4px; font-size: 13px; }
+.folder-details:empty { display: none; }
+.fd-summary { background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+.fd-summary b { font-weight: 600; }
+.fd-ratio { display: flex; height: 8px; border-radius: 4px; overflow: hidden; margin: 6px 0 4px; gap: 2px; }
+.fd-ratio span { display: block; height: 100%; }
+.fd-legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--text-2); }
+.fd-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }
+.fd-sources { color: var(--text-2); font-size: 12px; margin-top: 4px; }
+
+/* ---------- test tab ---------- */
+.test-layout { display: grid; grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 900px) { .test-layout { grid-template-columns: minmax(0, 1fr); } }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+.dropzone {
+  border: 2px dashed var(--border); border-radius: var(--radius); padding: 28px 16px; text-align: center;
+  background: var(--surface-2); cursor: pointer; transition: border-color .15s, background .15s;
+}
+.dropzone .dz-main { font-weight: 600; margin-bottom: 4px; }
+.dropzone[aria-disabled="true"] { cursor: not-allowed; opacity: .65; }
+.dropzone.over { border-color: var(--accent); background: var(--accent-soft); }
+.ts-results { display: flex; flex-direction: column; gap: 14px; margin-top: 14px; }
+.ts-item { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(220px, 1fr); gap: 14px; border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; background: var(--surface); }
+@media (max-width: 1000px) { .ts-item { grid-template-columns: minmax(0, 1fr); } }
+.ts-img { background: #0e0e0f; border-radius: 6px; display: flex; align-items: center; justify-content: center; min-height: 160px; overflow: hidden; }
+.ts-img .imgbox img { max-height: 520px; }
+.ts-meta { font-size: 13px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.ts-meta .fn { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.conf-bar { display: inline-block; width: 50px; height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; vertical-align: middle; margin-right: 6px; }
+.conf-bar > span { display: block; height: 100%; background: var(--series-1); }
+.ts-model-meta, #ts-model .mono { overflow-wrap: anywhere; }
+
+/* Test tab: label mapping (index - name) */
+.ts-classmap-head { margin-top: 10px; }
+.ts-classmap { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 2px 16px;
+  margin-top: 6px; padding: 8px 10px; border: 1px solid var(--border, #ddd); border-radius: 6px;
+  max-height: 260px; overflow-y: auto; font-size: 13px; }
+.ts-cm-row { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 1px 0; }
+.ts-cm-idx { font-variant-numeric: tabular-nums; min-width: 2.2em; text-align: right; font-family: ui-monospace, monospace; }
+.ts-cm-sep { color: var(--muted, #888); }
+.ts-cm-name { overflow-wrap: anywhere; }
+
+/* Export tab */
+.ex-file { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-top: 8px; }
+.ex-file .mono { overflow-wrap: anywhere; }
+.ex-log { height: 260px; margin-top: 6px; }
+#ex-info .notice { overflow-wrap: anywhere; }

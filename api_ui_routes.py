@@ -2,7 +2,7 @@
 UI routes — dataset management, preview, Label Studio, and system info
 =====================================================================
 JSON endpoints used by the web UI (static/, served at /ui). Dataset ids are
-paths relative to datasets/ (e.g. "1.labeled/pea_all"), passed as the ``id``
+paths relative to the dataset root (e.g. "1.labeled/pea_all"), passed as the ``id``
 query/body field because they contain slashes.
 """
 
@@ -291,7 +291,14 @@ def build_router(busy_dataset_paths: Callable[[], Iterable[str]]) -> APIRouter:
             output = _new_output(body.output_name, body.output_group)
         else:
             raise HTTPException(400, "Give output_id (existing) or output_name (new).")
-        return _call(dm.reindex_merge, sources, output)
+        result = _call(dm.reindex_merge, sources, output)
+        dm.record_run(output, "reindexed", {
+            "action": "reindex",
+            "sources": [r["source"] for r in result["sources"]],
+            "added": result["added"],
+            "new_classes": result["new_classes"],
+        })
+        return result
 
     @router.post("/datasets/repoint-state")
     def repoint_state(body: RepointBody):
@@ -337,8 +344,22 @@ def build_router(busy_dataset_paths: Callable[[], Iterable[str]]) -> APIRouter:
             raise HTTPException(400, "Give output_id (existing) or output_name (new).")
         result = _call(preprocess_data, sources, output, val_ratio=body.val_ratio, test_ratio=body.test_ratio)
         dm.invalidate_cache(output)
+        a = result["added"]
+        dm.record_run(output, "prepared", {
+            "action": "split",
+            "sources": [str(dm._rel_id(p)) for p in sources],
+            "ratio": {"train": round(1 - body.val_ratio - body.test_ratio, 4), "val": body.val_ratio, "test": body.test_ratio},
+            "added": {"train": a["train"], "val": a["val"], "test": a["test"]},
+            "new_classes": a["new_classes"],
+        }, split_ratio={"train": round(1 - body.val_ratio - body.test_ratio, 4), "val": body.val_ratio, "test": body.test_ratio})
         result["id"] = dm._rel_id(output)
         return result
+
+    @router.get("/datasets/details")
+    def dataset_details(id: str = Query(...)):
+        """How a folder was built: summary, split counts and ratios (configured
+        and actual), source folders, and run history from dataset_info.json."""
+        return _call(dm.folder_details, _dataset(id))
 
     # -- preview -------------------------------------------------------------
     @router.get("/datasets/images")
